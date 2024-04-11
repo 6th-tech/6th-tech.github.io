@@ -1,0 +1,40 @@
+<html>
+	<head>
+		<link href="./styles/generate.css" rel="stylesheet" />
+		<script type="text/javascript" src="https://tonejs.github.io/build/Tone.js"></script>
+	</head>
+	<body>
+		<label for="noiseType">Noise type:</label>
+		<select id="noiseType">
+			<option value="White">White</option>
+			<option value="Pink">Pink</option>
+			<option value="Brown" selected="selected">Brown</option>
+		</select><br><br>
+		<label for="carrierFreq">Carrier freq:</label>
+		<select id="carrierFreq">
+			<option value="174" selected="selected">174</option>
+			<option value="417">417</option>
+			<option value="528">528</option>
+			<option value="639">639</option>
+			<option value="852">852</option>
+		</select><br><br>
+		<label for="sequence">Sequence:</label>
+		<textarea id="sequence" rows="5">20.3, 30
+14.1, 30, 30
+3.9, 120, 30
+7.83, 120, 30
+2.5, 480, 30</textarea><br>
+		<label>&nbsp;</label>
+		<span class="info">Total time: </span><span id="totalTime" class="info"></span><br>
+		<div class="info">
+			<b>Delta:</b> 0.5-4 Hz<br>
+			<b>Theta:</b> 4-8 Hz; <b>Sch:</b> 7.83 Hz<br>
+			<b>Alpha:</b> 8-13 Hz; <b>Sch:</b> 14.1 Hz(?)<br>
+			<b>Beta:</b> 13-32 Hz; <b>Sch:</b> 14.1 Hz, 20.3 Hz, 26.4 Hz, 32.4 Hz
+		</div>
+		<br>
+		<button id="playButton">Play</button>
+		<br><br>
+		<script type="text/javascript" src="./scripts/generate.js"></script>
+	</body>
+</html>

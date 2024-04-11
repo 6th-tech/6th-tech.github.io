@@ -1,0 +1,21 @@
+label {
+	display: inline-block;
+	width: 100px;
+	vertical-align: top;
+}
+
+select {
+	width: 100px;
+}
+
+button {
+	padding: 2em;
+}
+
+textarea {
+	width: 300px;
+}
+
+.info {
+	font-size: 0.8em;
+}
