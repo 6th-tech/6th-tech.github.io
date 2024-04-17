@@ -2,6 +2,7 @@
 const fadeIn = 10; // sec
 const fadeOut = 10; // sec
 const testTries = 100;
+const fixedDuration = 30;
 // -----------------------------
 
 const sequence = [
@@ -12,7 +13,7 @@ const sequence = [
 	{ frequency: 2.5, duration: 480, rampDuration: 30 }
 ];
 
-let averageDuration = sessionStorage.getItem("averageDuration") || 0;
+let averageDuration = fixedDuration || sessionStorage.getItem("averageDuration") || 0;
 let xSequence;
 let audio;
 
@@ -70,9 +71,9 @@ function wait(ms) {
 }
 
 async function flicker(track) {
-	await track.applyConstraints({ advanced: [{torch: true}] });
-	await wait(10);
-	await track.applyConstraints({ advanced: [{torch: false}] });
+	track.applyConstraints({ advanced: [{torch: true}] });
+	await wait(fixedDuration);
+	track.applyConstraints({ advanced: [{torch: false}] });
 }
 
 async function startFlickering(track, flickers = 0, index = 0, sequenceStart = Date.now()) {
@@ -127,6 +128,7 @@ async function getTrack() {
 	}
 	const imageCapture = new ImageCapture(track)
 	await imageCapture.getPhotoCapabilities();
+	await wait(500);
 	return track;
 }
 
