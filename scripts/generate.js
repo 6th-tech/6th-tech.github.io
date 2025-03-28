@@ -9,6 +9,7 @@ const mainVolume = 0.8;
 const playButton = document.querySelector("#playButton");
 const sequenceArea = document.querySelector("#sequence");
 const noiseFileInput = document.querySelector("#noiseFile");
+const noiseModulationCheckbox = document.querySelector("#noiseModulation");
 
 let sequence, noiseType, carrierFreq, length;
 let oscillator, lfo, noiseFilter, noise, masterGain, recorder;
@@ -45,13 +46,19 @@ function initAudio() {
 
 	const useNoiseFile = noiseFileInput.files.length > 0;
 	const noiseGain = new Tone.Gain(useNoiseFile ? 1 : noiseVolume);
-	noiseFilter = new Tone.AutoFilter(
-		{
-			"frequency": "8m",
-			"min": 800,
-			"max": 15000
-		})
-		.connect(noiseGain);
+	
+	// Only create noise filter if modulation is enabled
+	if (noiseModulationCheckbox.checked) {
+		noiseFilter = new Tone.AutoFilter(
+			{
+				"frequency": "8m",
+				"min": 800,
+				"max": 15000
+			})
+			.connect(noiseGain);
+	} else {
+		noiseFilter = null;
+	}
 
 	// Check if a file is selected
 	if (useNoiseFile) {
@@ -65,7 +72,7 @@ function initAudio() {
 					url: toneBuffer,
 					loop: true,
 					volume: 1
-				}).connect(noiseFilter);
+				}).connect(noiseFilter || noiseGain);
 				isAudioFileLoaded = true;
 				console.log("Audio file loaded successfully");
 			}, (error) => {
@@ -80,7 +87,7 @@ function initAudio() {
 		reader.readAsArrayBuffer(file);
 	} else {
 		noise = new Tone.Noise(noiseType.toLowerCase())
-			.connect(noiseFilter);
+			.connect(noiseFilter || noiseGain);
 		isAudioFileLoaded = true;
 	}
 
@@ -143,7 +150,9 @@ function start() {
 	} else {
 		noise.start();
 	}
-	noiseFilter.start();
+	if (noiseFilter) {
+		noiseFilter.start();
+	}
 	oscillator.start();
 	lfo.start();
 
@@ -163,7 +172,9 @@ function stop() {
 	} else {
 		noise.stop();
 	}
-	noiseFilter.stop();
+	if (noiseFilter) {
+		noiseFilter.stop();
+	}
 	oscillator.stop();
 	lfo.stop();
 
