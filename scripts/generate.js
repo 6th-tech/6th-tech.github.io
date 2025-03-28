@@ -8,9 +8,12 @@ const mainVolume = 0.8;
 
 const playButton = document.querySelector("#playButton");
 const sequenceArea = document.querySelector("#sequence");
+const noiseFileInput = document.querySelector("#noiseFile");
 
 let sequence, noiseType, carrierFreq, length;
 let oscillator, lfo, noiseFilter, noise, masterGain, recorder;
+let audioFilePlayer;
+let isAudioFileLoaded = false;
 
 function parseSequence() {
 	sequence = sequenceArea.value
@@ -40,7 +43,8 @@ function initAudio() {
 	lfo = new Tone.LFO(sequence[0].frequency, 0, 1, "square")
 		.connect(oscillatorGain.gain);
 
-	const noiseGain = new Tone.Gain(noiseVolume);
+	const useNoiseFile = noiseFileInput.files.length > 0;
+	const noiseGain = new Tone.Gain(useNoiseFile ? 1 : noiseVolume);
 	noiseFilter = new Tone.AutoFilter(
 		{
 			"frequency": "8m",
@@ -48,8 +52,37 @@ function initAudio() {
 			"max": 15000
 		})
 		.connect(noiseGain);
-	noise = new Tone.Noise(noiseType.toLowerCase())
-		.connect(noiseFilter);
+
+	// Check if a file is selected
+	if (useNoiseFile) {
+		const file = noiseFileInput.files[0];
+		const reader = new FileReader();
+		reader.onload = (e) => {
+			const webAudioContext = new (window.AudioContext || window.webkitAudioContext)();
+			webAudioContext.decodeAudioData(e.target.result, (buffer) => {
+				const toneBuffer = new Tone.Buffer(buffer);
+				audioFilePlayer = new Tone.Player({
+					url: toneBuffer,
+					loop: true,
+					volume: 1
+				}).connect(noiseFilter);
+				isAudioFileLoaded = true;
+				console.log("Audio file loaded successfully");
+			}, (error) => {
+				console.error("Error decoding audio data:", error);
+				isAudioFileLoaded = false;
+			});
+		};
+		reader.onerror = (error) => {
+			console.error("Error reading file:", error);
+			isAudioFileLoaded = false;
+		};
+		reader.readAsArrayBuffer(file);
+	} else {
+		noise = new Tone.Noise(noiseType.toLowerCase())
+			.connect(noiseFilter);
+		isAudioFileLoaded = true;
+	}
 
 	masterGain = new Tone.Gain(0).toDestination();
 	oscillatorGain.connect(masterGain);
@@ -105,7 +138,11 @@ function setFadeInAndOut() {
 function start() {
 	playButton.disabled = true;
 
-	noise.start();
+	if (audioFilePlayer) {
+		audioFilePlayer.start();
+	} else {
+		noise.start();
+	}
 	noiseFilter.start();
 	oscillator.start();
 	lfo.start();
@@ -121,7 +158,11 @@ function start() {
 function stop() {
 	Tone.Transport.stop();
 
-	noise.stop();
+	if (audioFilePlayer) {
+		audioFilePlayer.stop();
+	} else {
+		noise.stop();
+	}
 	noiseFilter.stop();
 	oscillator.stop();
 	lfo.stop();
@@ -137,6 +178,14 @@ sequenceArea.addEventListener("input", async () => {
 
 playButton.addEventListener("click", async () => {
 	init();
+	
+	// Wait for audio file to be loaded if one is selected
+	if (noiseFileInput.files.length > 0) {
+		while (!isAudioFileLoaded) {
+			await new Promise(resolve => setTimeout(resolve, 100));
+		}
+	}
+
 	start();
 
 	setTimeout(() => {
