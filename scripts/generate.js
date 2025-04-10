@@ -45,7 +45,7 @@ function initAudio() {
 		.connect(oscillatorGain.gain);
 
 	const useNoiseFile = noiseFileInput.files.length > 0;
-	const noiseGain = new Tone.Gain(useNoiseFile ? mainVolume : noiseVolume);
+	const noiseGain = new Tone.Gain(useNoiseFile ? parseFloat(document.getElementById("noiseVolume").value) : noiseVolume);
 	
 	// Only create noise filter if modulation is enabled
 	if (noiseModulationCheckbox.checked) {

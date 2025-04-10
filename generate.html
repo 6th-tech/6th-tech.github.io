@@ -10,11 +10,13 @@
 			<option value="Pink">Pink</option>
 			<option value="Brown" selected="selected">Brown</option>
 		</select><br>
-		<label for="noiseFile">OR:</label>
+		<label for="noiseModulation">Use noise modulation:</label>
+		<input type="checkbox" id="noiseModulation" /><br>
+		<label for="noiseFile"><b>OR:</b></label>
 		<input type="file" id="noiseFile" accept="audio/*" />
 		<br>
-		<label for="noiseModulation">Use noise modulation:</label>
-		<input type="checkbox" id="noiseModulation" />
+		<label for="noiseVolume">Noise file volume:</label>
+		<input type="text" id="noiseVolume" value="1" />
 		<br><br>
 		<label for="carrierFreq">Carrier freq:</label>
 		<select id="carrierFreq">
