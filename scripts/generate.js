@@ -3,7 +3,7 @@ const fadeIn = 10; // sec
 const fadeOut = 10; // sec
 const finalBuffer = 3; // sec
 const noiseVolume = 0.15;
-const mainVolume = 0.8;
+let mainVolume = 0.8;
 // -----------------------------
 
 const playButton = document.querySelector("#playButton");
@@ -34,6 +34,7 @@ function setTotalTime() {
 function initData() {
 	parseSequence();
 	noiseType = document.getElementById("noiseType").value;
+	mainVolume = parseFloat(document.getElementById("mainVolume").value);
 	carrierFreq = parseInt(document.getElementById("carrierFreq").value);
 }
 
