@@ -121,6 +121,10 @@ async function renderOfflineToBuffer() {
 	const durationSec = Math.max(0.01, Number(length) || 0);
 	if (!sequence.length) throw new Error("Sequence is empty or invalid.");
 
+	// NEW: choose channel count dynamically (preserve stereo if input noise is stereo)
+	const channels =
+		decodedNoiseBuffer && decodedNoiseBuffer.numberOfChannels > 1 ? 2 : 1;
+
 	const rendered = await Tone.Offline(({ transport }) => {
 		// Carrier gated by LFO -> master
 		const oscGate = new Tone.Gain(0);
@@ -188,7 +192,7 @@ async function renderOfflineToBuffer() {
 		master.gain.linearRampToValueAtTime(0, Math.min(durationSec, fadeOutStart + fadeOut));
 
 		transport.start(0);
-	}, durationSec); // default channels/sampleRate (44.1 kHz mono on most systems)
+	}, durationSec, channels); // <-- pass dynamic channel count (mono or stereo)
 
 	return rendered; // AudioBuffer
 }
@@ -198,7 +202,7 @@ function downloadWav(buffer) {
 	const blob = new Blob([wav], { type: "audio/wav" });
 	const url = URL.createObjectURL(blob);
 	const last = sequence[sequence.length - 1] || { frequency: 0 };
-	const fileName = `${last.frequency}Hz_${carrierFreq}Hz_${noiseType}.wav`;
+	const fileName = (document.getElementById("name").value || `${last.frequency}Hz_${carrierFreq}Hz_${noiseType}`) + ".wav";
 
 	const a = document.createElement("a");
 	a.href = url;
