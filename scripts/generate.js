@@ -1,6 +1,7 @@
 // --------- Variables ---------
 const fadeIn = 10; // sec
 const fadeOut = 10; // sec
+const noiseFade = 1; // sec
 const finalBuffer = 3; // sec
 const noiseVolume = 0.15;
 let mainVolume = 0.8;
@@ -10,6 +11,8 @@ const playButton = document.querySelector("#playButton");
 const sequenceArea = document.querySelector("#sequence");
 const noiseFileInput = document.querySelector("#noiseFile");
 const noiseModulationCheckbox = document.querySelector("#noiseModulation");
+const noiseFadeCheckbox = document.querySelector("#noiseFade");
+const alwaysMonoCheckbox = document.querySelector("#alwaysMono");
 
 let sequence, noiseType, carrierFreq, length;
 let isAudioFileLoaded = false;
@@ -152,12 +155,32 @@ async function renderOfflineToBuffer() {
 
 		if (decodedNoiseBuffer) {
 			const toneBuffer = new Tone.Buffer(decodedNoiseBuffer);
-			const player = new Tone.Player({
-				url: toneBuffer,
-				loop: true,
-				volume: 1
-			}).connect(filter || noiseGain);
-			player.start(0);
+			if (noiseFadeCheckbox.checked) {
+				const player = new Tone.Player({
+					url: toneBuffer,
+					loop: false,
+					volume: 1,
+					fadeIn: noiseFade,
+					fadeOut: noiseFade
+				}).connect(filter || noiseGain);
+		
+				const segDur = decodedNoiseBuffer.duration;
+				for (let t = 0; t < durationSec; t += segDur) {
+					const start = t;
+					const stop  = Math.min(t + segDur, durationSec);
+					if (stop - start > 0.01) {
+						player.start(start);
+						player.stop(stop);
+					}
+				}
+			} else {
+				const player = new Tone.Player({
+					url: toneBuffer,
+					loop: true,
+					volume: 1
+				}).connect(filter || noiseGain);
+				player.start(0);
+			}
 		} else {
 			const toneNoise = new Tone.Noise(noiseType.toLowerCase()).connect(filter || noiseGain);
 			toneNoise.start(0);
@@ -192,7 +215,7 @@ async function renderOfflineToBuffer() {
 		master.gain.linearRampToValueAtTime(0, Math.min(durationSec, fadeOutStart + fadeOut));
 
 		transport.start(0);
-	}, durationSec, channels); // <-- pass dynamic channel count (mono or stereo)
+	}, durationSec, alwaysMonoCheckbox.checked ? 1 : channels);
 
 	return rendered; // AudioBuffer
 }
