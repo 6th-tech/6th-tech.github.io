@@ -1,0 +1,20 @@
+[
+  {
+    "carrierFrequency": 417,
+    "backgroundSound": "brown",
+    "audioFile": "be_happy",
+    "sequence": "20.3, 30\n14.1, 30, 30\n7.83, 120, 30\n11, 390, 30"
+  },
+  {
+    "carrierFrequency": 528,
+    "backgroundSound": "white",
+    "audioFile": "positive_thinking",
+    "sequence": "20.3, 30\n14.1, 30, 30\n7.83, 60, 30\n12, 90, 30\n11, 330, 30"
+  },
+  {
+    "carrierFrequency": 417,
+    "backgroundSound": "light-rain-ambient-114354.mp3",
+    "audioFile": "sleep_well",
+    "sequence": "20.3, 30\n14.1, 30, 30\n3.9, 90, 30\n7.83, 90, 30\n2.5, 300, 30"
+  }
+]

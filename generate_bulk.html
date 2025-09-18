@@ -1,0 +1,86 @@
+<html>
+	<head>
+		<title>Bulk Audio Generation</title>
+		<link href="./styles/generate_bulk.css" rel="stylesheet" />
+		<script type="text/javascript" src="https://tonejs.github.io/build/Tone.js"></script>
+	</head>
+	<body>
+		<h1>Bulk Audio Generation</h1>
+		
+		<div class="input-section">
+			<label for="jsonFile">Configuration JSON File:</label>
+			<input type="file" id="jsonFile" accept=".json" />
+			<div class="help-text">
+				Select a JSON file containing the generation parameters for multiple audio files.
+			</div>
+		</div>
+		
+		<div class="input-section">
+			<label for="audioFolder">Audio Files Directory:</label>
+			<input type="file" id="audioFolder" webkitdirectory directory multiple />
+			<div class="help-text">
+				Select a folder containing MP3 files referenced in the JSON configuration.
+			</div>
+		</div>
+		
+		<div class="input-section">
+			<label for="alwaysMono">Always mono:</label>
+			<input type="checkbox" id="alwaysMono" />
+		</div>
+		
+		<div class="input-section">
+			<button id="generateButton" disabled>Generate All</button>
+		</div>
+		
+		<div id="status" class="status-section">
+			<h3>Status</h3>
+			<div id="statusText">Please select both a JSON file and an audio directory to begin.</div>
+			<div id="progressContainer" style="display: none;">
+				<div id="progressBar">
+					<div id="progressFill"></div>
+				</div>
+				<div id="progressText">0 / 0</div>
+			</div>
+		</div>
+		
+		<div id="downloads" class="downloads-section">
+			<h3>Generated Files</h3>
+			<div id="downloadsList"></div>
+		</div>
+		
+		<div class="info-section">
+			<h3>JSON Configuration Format</h3>
+			<pre><code>[
+  {
+    "carrierFrequency": 417,
+    "backgroundSound": "brown",
+    "audioFile": "be_happy",
+    "sequence": "20.3, 30\n14.1, 30, 30\n7.83, 120, 30\n11, 390, 30"
+  },
+  {
+    "carrierFrequency": 528,
+    "backgroundSound": "white",
+    "audioFile": "positive_thinking",
+    "sequence": "20.3, 30\n14.1, 30, 30\n7.83, 60, 30\n12, 90, 30\n11, 330, 30"
+  },
+  {
+    "carrierFrequency": 417,
+    "backgroundSound": "light-rain-ambient-114354.mp3",
+    "audioFile": "sleep_well",
+    "sequence": "20.3, 30\n14.1, 30, 30\n3.9, 90, 30\n7.83, 90, 30\n2.5, 300, 30"
+  }
+]</code></pre>
+			<div class="rules">
+				<h4>Generation Rules:</h4>
+				<ul>
+					<li>When backgroundSound is "white", "pink", or "brown": noise modulation and fade in/out are enabled</li>
+					<li>When backgroundSound is an MP3 file: noise file volume is set to 0.6</li>
+					<li>All other settings are automatically configured based on these rules</li>
+				</ul>
+			</div>
+		</div>
+		
+		<script type="text/javascript" src="./scripts/audio-core.js"></script>
+		<script type="text/javascript" src="./scripts/generate_bulk.js"></script>
+	</body>
+</html>
