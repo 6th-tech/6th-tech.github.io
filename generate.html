@@ -1,60 +1,122 @@
 <html>
 	<head>
+		<title>Audio Generation</title>
+		<link rel="icon" type="image/svg+xml" href="/favicon.svg">
 		<link href="./styles/generate.css" rel="stylesheet" />
 		<script type="text/javascript" src="https://tonejs.github.io/build/Tone.js"></script>
 	</head>
 	<body>
-		<label for="name">Name:</label>
-		<input type="text" id="name" />
-		<br><br>
-		<label for="noiseType">Noise type:</label>
-		<select id="noiseType">
-			<option value="White">White</option>
-			<option value="Pink">Pink</option>
-			<option value="Brown" selected="selected">Brown</option>
-		</select><br>
-		<label for="noiseModulation">Use noise modulation:</label>
-		<input type="checkbox" id="noiseModulation" /><br>
-		<label for="noiseFile"><b>OR:</b></label>
-		<input type="file" id="noiseFile" accept="audio/*" />
-		<br>
-		<label for="noiseVolume">Noise file volume:</label>
-		<input type="text" id="noiseVolume" value="1" />
-		<br>
-		<label for="noiseFade">Use noise fade in/out:</label>
-		<input type="checkbox" id="noiseFade" />
-		<br><br>
-		<label for="alwaysMono">Always mono:</label>
-		<input type="checkbox" id="alwaysMono" />
-		<br><br>
-		<label for="mainVolume">Main volume:</label>
-		<input type="text" id="mainVolume" value="0.8" />
-		<br><br>
-		<label for="carrierFreq">Carrier freq:</label>
-		<select id="carrierFreq">
-			<option value="174" selected="selected">174</option>
-			<option value="417">417</option>
-			<option value="528">528</option>
-			<option value="639">639</option>
-			<option value="852">852</option>
-		</select><br><br>
-		<label for="sequence">Sequence:</label>
-		<textarea id="sequence" rows="5">20.3, 30
+		<h1>Audio Generation</h1>
+		
+		<div class="input-section">
+			<label for="name">File Name:</label>
+			<input type="text" id="name" placeholder="Enter custom filename (optional)" />
+			<div class="help-text">
+				Leave empty to auto-generate filename based on sequence and settings.
+			</div>
+		</div>
+
+		<div class="input-section">
+			<h3>Background Sound</h3>
+			<div class="form-group">
+				<label for="noiseType">Noise Type:</label>
+				<select id="noiseType">
+					<option value="White">White</option>
+					<option value="Pink">Pink</option>
+					<option value="Brown" selected="selected">Brown</option>
+				</select>
+			</div>
+			
+			<div class="form-group">
+				<label for="noiseModulation">Use noise modulation:</label>
+				<input type="checkbox" id="noiseModulation" />
+			</div>
+			
+			<div class="separator">OR</div>
+			
+			<div class="form-group">
+				<label for="noiseFile">Custom Audio File:</label>
+				<input type="file" id="noiseFile" accept="audio/*" />
+			</div>
+			
+			<div class="form-group">
+				<label for="noiseVolume">Noise file volume:</label>
+				<input type="number" id="noiseVolume" value="1" min="0" max="2" step="0.1" />
+			</div>
+			
+			<div class="form-group">
+				<label for="noiseFade">Use noise fade in/out:</label>
+				<input type="checkbox" id="noiseFade" />
+			</div>
+		</div>
+
+		<div class="input-section">
+			<h3>Audio Settings</h3>
+			<div class="form-group">
+				<label for="carrierFreq">Carrier Frequency:</label>
+				<select id="carrierFreq">
+					<option value="174" selected="selected">174 Hz</option>
+					<option value="417">417 Hz</option>
+					<option value="528">528 Hz</option>
+					<option value="639">639 Hz</option>
+					<option value="852">852 Hz</option>
+				</select>
+			</div>
+			
+			<div class="form-group">
+				<label for="mainVolume">Main Volume:</label>
+				<input type="number" id="mainVolume" value="0.8" min="0" max="1" step="0.1" />
+			</div>
+			
+			<div class="form-group">
+				<label for="alwaysMono">Always Mono:</label>
+				<input type="checkbox" id="alwaysMono" />
+			</div>
+		</div>
+
+		<div class="input-section">
+			<h3>Sequence Configuration</h3>
+			<div class="form-group">
+				<label for="sequence">Frequency Sequence:</label>
+				<textarea id="sequence" rows="6" placeholder="Enter sequence in format: frequency, duration, ramp_duration">20.3, 30
 14.1, 30, 30
 3.9, 120, 30
 7.83, 120, 30
-2.5, 480, 30</textarea><br>
-		<label>&nbsp;</label>
-		<span class="info">Total time: </span><span id="totalTime" class="info"></span><br>
-		<div class="info">
-			<b>Delta:</b> 0.5-4 Hz; <b>Sol:</b> 174 Hz, 528 Hz<br>
-			<b>Theta:</b> 4-8 Hz; <b>Sol:</b> 528 Hz, 639 Hz, 852 Hz; <b>Sch:</b> 7.83 Hz<br>
-			<b>Alpha:</b> 8-13 Hz; <b>Sol:</b> 417 Hz, 528 Hz, 852 Hz; <b>Sch:</b> 14.1 Hz(?)<br>
-			<b>Beta:</b> 13-32 Hz; <b>Sch:</b> 14.1 Hz, 20.3 Hz, 26.4 Hz, 32.4 Hz
+2.5, 480, 30</textarea>
+			</div>
+			
+			<div class="sequence-info">
+				<span class="info-label">Total time: </span>
+				<span id="totalTime" class="info-value"></span>
+			</div>
 		</div>
-		<br>
-		<button id="playButton">Generate</button>
-		<br><br>
+
+		<div class="generate-section">
+			<button id="playButton">Generate Audio</button>
+		</div>
+
+		<div class="info-section">
+			<h3>Frequency Reference Guide</h3>
+			<div class="frequency-guide">
+				<div class="freq-category">
+					<strong>Delta (0.5-4 Hz):</strong> Deep sleep, healing
+					<div class="freq-details">Solfeggio: 174 Hz, 528 Hz</div>
+				</div>
+				<div class="freq-category">
+					<strong>Theta (4-8 Hz):</strong> Meditation, creativity
+					<div class="freq-details">Solfeggio: 528 Hz, 639 Hz, 852 Hz | Schumann: 7.83 Hz</div>
+				</div>
+				<div class="freq-category">
+					<strong>Alpha (8-13 Hz):</strong> Relaxation, focus
+					<div class="freq-details">Solfeggio: 417 Hz, 528 Hz, 852 Hz | Schumann: 14.1 Hz(?)</div>
+				</div>
+				<div class="freq-category">
+					<strong>Beta (13-32 Hz):</strong> Active thinking, concentration
+					<div class="freq-details">Schumann: 14.1 Hz, 20.3 Hz, 26.4 Hz, 32.4 Hz</div>
+				</div>
+			</div>
+		</div>
+
 		<script type="text/javascript" src="./scripts/audio-core.js"></script>
 		<script type="text/javascript" src="./scripts/generate.js"></script>
 	</body>
