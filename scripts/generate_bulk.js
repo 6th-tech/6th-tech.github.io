@@ -117,14 +117,14 @@ function getBulkGenerationRules(backgroundSound) {
 	
 	return {
 		useNoiseModulation: isNoise,
-		useNoiseFade: isNoise,
-		customNoiseVolume: isNoise ? null : 0.6
+		useNoiseFade: !isNoise,
+		customNoiseVolume: isNoise ? null : 0.2
 	};
 }
 
 async function generateSingleAudio(config, index) {
 	const { carrierFrequency, backgroundSound, audioFile, sequence } = config;
-	
+	console.log(`--------- Generating audio file ${audioFile} ---------`);
 	// Create download item in UI
 	const downloadItem = document.createElement('div');
 	downloadItem.className = 'download-item generating';
@@ -161,7 +161,7 @@ async function generateSingleAudio(config, index) {
 			length,
 			carrierFreq: carrierFrequency,
 			noiseType,
-			mainVolume: 0.8,
+			mainVolume: 0.7,
 			useNoiseModulation: rules.useNoiseModulation,
 			useNoiseFade: rules.useNoiseFade,
 			alwaysMono: alwaysMonoCheckbox.checked,

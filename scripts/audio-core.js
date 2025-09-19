@@ -5,9 +5,9 @@
 // --------- Constants ---------
 const fadeIn = 10; // sec
 const fadeOut = 10; // sec
-const noiseFade = 1; // sec
+const noiseFade = 3; // sec
 const finalBuffer = 3; // sec
-const noiseVolume = 0.15;
+const noiseVolume = 0.2;
 
 // --------- Parsing Functions ---------
 function parseSequence(sequenceText) {
@@ -100,7 +100,7 @@ async function generateAudio(options) {
 		length,
 		carrierFreq,
 		noiseType = 'brown',
-		mainVolume = 0.8,
+		mainVolume = 0.7,
 		useNoiseModulation = false,
 		useNoiseFade = false,
 		alwaysMono = false,
@@ -108,11 +108,18 @@ async function generateAudio(options) {
 		customNoiseVolume = null
 	} = options;
 
+	let maxVolume = 1;
 	const durationSec = Math.max(0.01, Number(length) || 0);
 	if (!sequence.length) throw new Error("Sequence is empty or invalid.");
 
 	// Choose channel count dynamically (preserve stereo if input noise is stereo)
 	const channels = decodedNoiseBuffer && decodedNoiseBuffer.numberOfChannels > 1 ? 2 : 1;
+	
+	// Log the maximum volume of the decoded noise buffer for debugging
+	if (decodedNoiseBuffer) {
+		maxVolume = getMaxVolume(decodedNoiseBuffer);
+		console.log(`Max volume of decoded noise buffer: ${maxVolume.toFixed(4)} (${(maxVolume * 100).toFixed(2)}%)`);
+	}
 
 	const rendered = await Tone.Offline(({ transport }) => {
 		// Carrier gated by LFO -> master
@@ -124,8 +131,10 @@ async function generateAudio(options) {
 		const lfo = new Tone.LFO(firstFreq, 0, 1, "square").connect(oscGate.gain);
 
 		// Noise path: user file (looped) or built-in noise
-		const effectiveNoiseVolume = customNoiseVolume !== null ? customNoiseVolume : 
-			(decodedNoiseBuffer ? 1.0 : noiseVolume);
+		const effectiveNoiseVolume = (customNoiseVolume !== null ? customNoiseVolume : 
+			(decodedNoiseBuffer ? 1.0 : noiseVolume)) / maxVolume;
+		console.log("Custom noise volume: ", customNoiseVolume);
+		console.log("Effective noise volume: ", effectiveNoiseVolume);
 		const noiseGain = new Tone.Gain(effectiveNoiseVolume);
 
 		let filter = null;
@@ -141,20 +150,22 @@ async function generateAudio(options) {
 
 		if (decodedNoiseBuffer) {
 			const toneBuffer = new Tone.Buffer(decodedNoiseBuffer);
+			console.log("Using noise fade: ", useNoiseFade);
 			if (useNoiseFade) {
-				const player = new Tone.Player({
-					url: toneBuffer,
-					loop: false,
-					volume: 1,
-					fadeIn: noiseFade,
-					fadeOut: noiseFade
-				}).connect(filter || noiseGain);
-		
 				const segDur = decodedNoiseBuffer.duration;
 				for (let t = 0; t < durationSec; t += segDur) {
 					const start = t;
 					const stop  = Math.min(t + segDur, durationSec);
 					if (stop - start > 0.01) {
+						// Create a separate player instance for each segment to ensure fade works
+						const player = new Tone.Player({
+							url: toneBuffer,
+							loop: false,
+							volume: 1,
+							fadeIn: noiseFade,
+							fadeOut: noiseFade
+						}).connect(filter || noiseGain);
+						
 						player.start(start);
 						player.stop(stop);
 					}
@@ -219,6 +230,28 @@ function downloadWav(buffer, fileName) {
 	
 	// Clean up the URL after a short delay
 	setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// --------- Audio Analysis Functions ---------
+function getMaxVolume(audioBuffer) {
+	if (!audioBuffer) return 0;
+	
+	let maxVolume = 0;
+	const numberOfChannels = audioBuffer.numberOfChannels;
+	const length = audioBuffer.length;
+	
+	// Check all channels to find the absolute maximum amplitude
+	for (let channel = 0; channel < numberOfChannels; channel++) {
+		const channelData = audioBuffer.getChannelData(channel);
+		for (let i = 0; i < length; i++) {
+			const absoluteValue = Math.abs(channelData[i]);
+			if (absoluteValue > maxVolume) {
+				maxVolume = absoluteValue;
+			}
+		}
+	}
+	
+	return maxVolume;
 }
 
 // --------- Utility Functions ---------
