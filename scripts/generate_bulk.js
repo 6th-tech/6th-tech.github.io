@@ -103,7 +103,7 @@ function validateJsonConfig() {
 		try {
 			const { length } = parseSequence(sequenceData);
 			const durationMinutes = length / 60;
-			if (Math.abs(durationMinutes - expectedDuration) > 0.1) { // Allow small tolerance
+			if (Math.abs(durationMinutes - expectedDuration) > 0) {
 				errors.push(`Configuration ${index + 1} (${config.audioFile}): Sequence duration is ${durationMinutes.toFixed(1)} minutes, should be ${expectedDuration} minutes`);
 			}
 		} catch (e) {
