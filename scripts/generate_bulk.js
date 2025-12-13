@@ -8,6 +8,7 @@ let isGenerating = false;
 // DOM elements
 const jsonFileInput = document.querySelector("#jsonFile");
 const audioFolderInput = document.querySelector("#audioFolder");
+const shortSessionsCheckbox = document.querySelector("#shortSessions");
 const alwaysMonoCheckbox = document.querySelector("#alwaysMono");
 const generateButton = document.querySelector("#generateButton");
 const statusText = document.querySelector("#statusText");
@@ -85,14 +86,25 @@ function validateJsonConfig() {
 	}
 
 	const errors = [];
+	const isShortSession = shortSessionsCheckbox.checked;
+	const expectedDuration = isShortSession ? 6 : 11;
+	const sequenceField = isShortSession ? 'shortSequence' : 'sequence';
 
 	jsonConfig.forEach((config, index) => {
-		// Check sequence duration (should be 11 minutes = 660 seconds)
+		const sequenceData = config[sequenceField];
+
+		// Check if the required sequence field exists
+		if (!sequenceData) {
+			errors.push(`Configuration ${index + 1} (${config.audioFile}): Missing '${sequenceField}' field`);
+			return;
+		}
+
+		// Check sequence duration
 		try {
-			const { length } = parseSequence(config.sequence);
+			const { length } = parseSequence(sequenceData);
 			const durationMinutes = length / 60;
-			if (Math.abs(durationMinutes - 11) > 0.1) { // Allow small tolerance
-				errors.push(`Configuration ${index + 1} (${config.audioFile}): Sequence duration is ${durationMinutes.toFixed(1)} minutes, should be 11 minutes`);
+			if (Math.abs(durationMinutes - expectedDuration) > 0.1) { // Allow small tolerance
+				errors.push(`Configuration ${index + 1} (${config.audioFile}): Sequence duration is ${durationMinutes.toFixed(1)} minutes, should be ${expectedDuration} minutes`);
 			}
 		} catch (e) {
 			errors.push(`Configuration ${index + 1} (${config.audioFile}): Invalid sequence format`);
@@ -123,7 +135,10 @@ function getBulkGenerationRules(backgroundSound) {
 }
 
 async function generateSingleAudio(config, index) {
-	const { carrierFrequency, backgroundSound, audioFile, sequence } = config;
+	const { carrierFrequency, backgroundSound, audioFile } = config;
+	const isShortSession = shortSessionsCheckbox.checked;
+	const sequenceData = isShortSession ? config.shortSequence : config.sequence;
+
 	console.log(`--------- Generating audio file ${audioFile} ---------`);
 	// Create download item in UI
 	const downloadItem = document.createElement('div');
@@ -133,10 +148,10 @@ async function generateSingleAudio(config, index) {
 		<span>Generating...</span>
 	`;
 	downloadsList.appendChild(downloadItem);
-	
+
 	try {
 		// Parse sequence
-		const { sequence: parsedSequence, length } = parseSequence(sequence);
+		const { sequence: parsedSequence, length } = parseSequence(sequenceData);
 		
 		// Get generation rules
 		const rules = getBulkGenerationRules(backgroundSound);
@@ -170,9 +185,9 @@ async function generateSingleAudio(config, index) {
 		};
 		
 		const audioBuffer = await generateAudio(audioOptions);
-		
+
 		// Generate filename and download
-		const fileName = `${config.audioFile}.wav`;
+		const fileName = isShortSession ? `${config.audioFile}.short.wav` : `${config.audioFile}.wav`;
 		downloadWav(audioBuffer, fileName);
 		
 		// Update UI
