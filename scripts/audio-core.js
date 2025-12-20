@@ -107,7 +107,8 @@ async function generateAudio(options) {
 		decodedNoiseBuffer = null,
 		customNoiseVolume = null,
 		useBinaural = false,
-		binauralVolume = 0.12
+		binauralVolume = 0.12,
+		muteIsochronic = false
 	} = options;
 
 	let maxVolume = 1;
@@ -213,7 +214,9 @@ async function generateAudio(options) {
 
 		// Master out
 		const master = new Tone.Gain(0).toDestination();
-		oscGate.connect(master);
+		if (!muteIsochronic) {
+			oscGate.connect(master);
+		}
 		noiseGain.connect(master);
 		if (binauralGain) {
 			binauralGain.connect(master);
