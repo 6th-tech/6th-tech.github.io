@@ -8,6 +8,7 @@ const noiseFileInput = document.querySelector("#noiseFile");
 const noiseModulationCheckbox = document.querySelector("#noiseModulation");
 const noiseFadeCheckbox = document.querySelector("#noiseFade");
 const alwaysMonoCheckbox = document.querySelector("#alwaysMono");
+const useBinauralCheckbox = document.querySelector("#useBinaural");
 
 let sequence, noiseType, carrierFreq, length;
 let isAudioFileLoaded = false;
@@ -64,7 +65,8 @@ async function renderOfflineToBuffer() {
 		useNoiseFade: noiseFadeCheckbox.checked,
 		alwaysMono: alwaysMonoCheckbox.checked,
 		decodedNoiseBuffer,
-		customNoiseVolume: decodedNoiseBuffer ? parseFloat(document.getElementById("noiseVolume").value) : null
+		customNoiseVolume: decodedNoiseBuffer ? parseFloat(document.getElementById("noiseVolume").value) : null,
+		useBinaural: useBinauralCheckbox.checked
 	};
 	
 	return await generateAudio(audioOptions);

@@ -62,12 +62,20 @@
 					<option value="852">852 Hz</option>
 				</select>
 			</div>
-			
+
 			<div class="form-group">
 				<label for="mainVolume">Main Volume:</label>
 				<input type="number" id="mainVolume" value="0.7" min="0" max="1" step="0.1" />
 			</div>
-			
+
+			<div class="form-group">
+				<label for="useBinaural">Include Binaural Beats:</label>
+				<input type="checkbox" id="useBinaural" />
+				<div class="help-text">
+					Adds a subtle binaural layer using the carrier frequency as base. Beat frequency follows the isochronic sequence.
+				</div>
+			</div>
+
 			<div class="form-group">
 				<label for="alwaysMono">Always Mono:</label>
 				<input type="checkbox" id="alwaysMono" />

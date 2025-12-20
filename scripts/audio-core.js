@@ -105,15 +105,17 @@ async function generateAudio(options) {
 		useNoiseFade = false,
 		alwaysMono = false,
 		decodedNoiseBuffer = null,
-		customNoiseVolume = null
+		customNoiseVolume = null,
+		useBinaural = false,
+		binauralVolume = 0.12
 	} = options;
 
 	let maxVolume = 1;
 	const durationSec = Math.max(0.01, Number(length) || 0);
 	if (!sequence.length) throw new Error("Sequence is empty or invalid.");
 
-	// Choose channel count dynamically (preserve stereo if input noise is stereo)
-	const channels = decodedNoiseBuffer && decodedNoiseBuffer.numberOfChannels > 1 ? 2 : 1;
+	// Choose channel count dynamically (force stereo if binaural, or preserve stereo if input noise is stereo)
+	const channels = alwaysMono ? 1 : (useBinaural ? 2 : (decodedNoiseBuffer && decodedNoiseBuffer.numberOfChannels > 1 ? 2 : 1));
 	
 	// Log the maximum volume of the decoded noise buffer for debugging
 	if (decodedNoiseBuffer) {
@@ -183,10 +185,39 @@ async function generateAudio(options) {
 			toneNoise.start(0);
 		}
 
+		// Binaural layer (two continuous oscillators, hard-panned L/R)
+		let binauralL, binauralR, panL, panR, binauralGain;
+		if (useBinaural && channels === 2) {
+			const firstBeatFreq = sequence[0].frequency;
+
+			// Left channel: carrier frequency
+			// Right channel: carrier frequency + beat frequency
+			binauralL = new Tone.Oscillator(carrierFreq, "sine");
+			binauralR = new Tone.Oscillator(carrierFreq + firstBeatFreq, "sine");
+
+			// Hard-pan left and right
+			panL = new Tone.Panner(-1);
+			panR = new Tone.Panner(1);
+
+			// Binaural bus with its own gain control
+			binauralGain = new Tone.Gain(0); // Start at 0 for fade-in
+
+			binauralL.connect(panL);
+			binauralR.connect(panR);
+			panL.connect(binauralGain);
+			panR.connect(binauralGain);
+
+			binauralL.start(0);
+			binauralR.start(0);
+		}
+
 		// Master out
 		const master = new Tone.Gain(0).toDestination();
 		oscGate.connect(master);
 		noiseGain.connect(master);
+		if (binauralGain) {
+			binauralGain.connect(master);
+		}
 
 		// Start sources
 		osc.start(0);
@@ -198,6 +229,10 @@ async function generateAudio(options) {
 			if (step.rampDuration) {
 				transport.schedule(() => {
 					lfo.frequency.linearRampTo(step.frequency, step.rampDuration);
+					// Also ramp binaural beat frequency (right oscillator) to follow the sequence
+					if (binauralR) {
+						binauralR.frequency.linearRampTo(carrierFreq + step.frequency, step.rampDuration);
+					}
 				}, currentTime);
 			}
 			currentTime += step.duration + (step.rampDuration || 0);
@@ -210,6 +245,14 @@ async function generateAudio(options) {
 		const fadeOutStart = Math.max(0, durationSec - Math.max(0, fadeOut + finalBuffer));
 		master.gain.setValueAtTime(headroom, fadeOutStart);
 		master.gain.linearRampToValueAtTime(0, Math.min(durationSec, fadeOutStart + fadeOut));
+
+		// Binaural layer fade (follows master fade timing)
+		if (binauralGain) {
+			binauralGain.gain.setValueAtTime(0, 0);
+			binauralGain.gain.linearRampToValueAtTime(binauralVolume, Math.min(fadeIn, durationSec));
+			binauralGain.gain.setValueAtTime(binauralVolume, fadeOutStart);
+			binauralGain.gain.linearRampToValueAtTime(0, Math.min(durationSec, fadeOutStart + fadeOut));
+		}
 
 		transport.start(0);
 	}, durationSec, alwaysMono ? 1 : channels);
