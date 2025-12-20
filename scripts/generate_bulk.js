@@ -9,6 +9,7 @@ let isGenerating = false;
 const jsonFileInput = document.querySelector("#jsonFile");
 const audioFolderInput = document.querySelector("#audioFolder");
 const shortSessionsCheckbox = document.querySelector("#shortSessions");
+const useBinauralCheckbox = document.querySelector("#useBinaural");
 const alwaysMonoCheckbox = document.querySelector("#alwaysMono");
 const generateButton = document.querySelector("#generateButton");
 const statusText = document.querySelector("#statusText");
@@ -181,7 +182,8 @@ async function generateSingleAudio(config, index) {
 			useNoiseFade: rules.useNoiseFade,
 			alwaysMono: alwaysMonoCheckbox.checked,
 			decodedNoiseBuffer,
-			customNoiseVolume: rules.customNoiseVolume
+			customNoiseVolume: rules.customNoiseVolume,
+			useBinaural: useBinauralCheckbox.checked
 		};
 		
 		const audioBuffer = await generateAudio(audioOptions);
