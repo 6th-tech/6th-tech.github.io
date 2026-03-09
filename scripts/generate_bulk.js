@@ -132,7 +132,7 @@ function getBulkGenerationRules(backgroundSound) {
 	return {
 		useNoiseModulation: isNoise,
 		useNoiseFade: !isNoise,
-		customNoiseVolume: isNoise ? null : parseFloat(document.querySelector("#noiseVolume").value)
+		customNoiseVolume: parseFloat(document.querySelector("#noiseVolume").value)
 	};
 }
 

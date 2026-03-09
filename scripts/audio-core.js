@@ -7,7 +7,7 @@ const fadeIn = 10; // sec
 const fadeOut = 10; // sec
 const noiseFade = 3; // sec
 const finalBuffer = 3; // sec
-const noiseVolume = 0.2;
+const defaultBackgroundVolume = 0.5;
 
 // --------- Parsing Functions ---------
 function parseSequence(sequenceText) {
@@ -135,8 +135,7 @@ async function generateAudio(options) {
 		const lfo = new Tone.LFO(firstFreq, 0, isochronicVolume, "square").connect(oscGate.gain);
 
 		// Noise path: user file (looped) or built-in noise
-		const effectiveNoiseVolume = (customNoiseVolume !== null ? customNoiseVolume : 
-			(decodedNoiseBuffer ? 1.0 : noiseVolume)) / maxVolume;
+		const effectiveNoiseVolume = (customNoiseVolume !== null ? customNoiseVolume : defaultBackgroundVolume) / maxVolume;
 		console.log("Custom noise volume: ", customNoiseVolume);
 		console.log("Effective noise volume: ", effectiveNoiseVolume);
 		const noiseGain = new Tone.Gain(effectiveNoiseVolume);

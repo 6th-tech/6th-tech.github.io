@@ -66,7 +66,7 @@ async function renderOfflineToBuffer() {
 		useNoiseFade: noiseFadeCheckbox.checked,
 		alwaysMono: alwaysMonoCheckbox.checked,
 		decodedNoiseBuffer,
-		customNoiseVolume: decodedNoiseBuffer ? parseFloat(document.getElementById("noiseVolume").value) : null,
+		customNoiseVolume: parseFloat(document.getElementById("noiseVolume").value),
 		useBinaural: useBinauralCheckbox.checked,
 		isochronicVolume: parseFloat(document.getElementById("isochronicVolume").value),
 		muteIsochronic: muteIsochronicCheckbox.checked
