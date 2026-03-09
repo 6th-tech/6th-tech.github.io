@@ -212,9 +212,8 @@ async function generateAudio(options) {
 			binauralR.start(0);
 		}
 
-		// Master out (limiter prevents clipping when signals sum above 1.0)
-		const limiter = new Tone.Limiter(-3).toDestination();
-		const master = new Tone.Gain(0).connect(limiter);
+		// Master out
+		const master = new Tone.Gain(0).toDestination();
 		if (!muteIsochronic) {
 			oscGate.connect(master);
 		}
@@ -260,6 +259,19 @@ async function generateAudio(options) {
 
 		transport.start(0);
 	}, durationSec, alwaysMono ? 1 : channels);
+
+	// Normalize if any peaks exceed 1.0 to prevent clipping
+	const peak = getMaxVolume(rendered);
+	if (peak > 1.0) {
+		const scale = 1.0 / peak;
+		console.log(`Normalizing output: peak was ${peak.toFixed(4)}, scaling by ${scale.toFixed(4)}`);
+		for (let ch = 0; ch < rendered.numberOfChannels; ch++) {
+			const data = rendered.getChannelData(ch);
+			for (let i = 0; i < data.length; i++) {
+				data[i] *= scale;
+			}
+		}
+	}
 
 	return rendered; // AudioBuffer
 }
