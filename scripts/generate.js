@@ -1,5 +1,5 @@
 // --------- Variables ---------
-let mainVolume = 0.7;
+let mainVolume = 0.6;
 // -----------------------------
 
 const playButton = document.querySelector("#playButton");

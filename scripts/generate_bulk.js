@@ -178,7 +178,7 @@ async function generateSingleAudio(config, index) {
 			length,
 			carrierFreq: carrierFrequency,
 			noiseType,
-			mainVolume: 0.7,
+			mainVolume: 0.6,
 			useNoiseModulation: rules.useNoiseModulation,
 			useNoiseFade: rules.useNoiseFade,
 			alwaysMono: alwaysMonoCheckbox.checked,
