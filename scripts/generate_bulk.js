@@ -178,7 +178,7 @@ async function generateSingleAudio(config, index) {
 			length,
 			carrierFreq: carrierFrequency,
 			noiseType,
-			mainVolume: 0.6,
+			mainVolume: parseFloat(document.querySelector("#mainVolume").value),
 			useNoiseModulation: rules.useNoiseModulation,
 			useNoiseFade: rules.useNoiseFade,
 			alwaysMono: alwaysMonoCheckbox.checked,

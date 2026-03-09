@@ -100,7 +100,7 @@ async function generateAudio(options) {
 		length,
 		carrierFreq,
 		noiseType = 'brown',
-		mainVolume = 0.6,
+		mainVolume = 0.7,
 		useNoiseModulation = false,
 		useNoiseFade = false,
 		alwaysMono = false,
@@ -213,7 +213,7 @@ async function generateAudio(options) {
 		}
 
 		// Master out (limiter prevents clipping when signals sum above 1.0)
-		const limiter = new Tone.Limiter(-1).toDestination();
+		const limiter = new Tone.Limiter(-3).toDestination();
 		const master = new Tone.Gain(0).connect(limiter);
 		if (!muteIsochronic) {
 			oscGate.connect(master);
@@ -243,7 +243,7 @@ async function generateAudio(options) {
 		});
 
 		// Fades & headroom
-		const headroom = Math.min(mainVolume, 0.6);
+		const headroom = Math.min(mainVolume, 0.89);
 		master.gain.setValueAtTime(0, 0);
 		master.gain.linearRampToValueAtTime(headroom, Math.min(fadeIn, durationSec));
 		const fadeOutStart = Math.max(0, durationSec - Math.max(0, fadeOut + finalBuffer));
