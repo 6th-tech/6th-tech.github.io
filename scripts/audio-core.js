@@ -260,11 +260,13 @@ async function generateAudio(options) {
 		transport.start(0);
 	}, durationSec, alwaysMono ? 1 : channels);
 
-	// Normalize if any peaks exceed 1.0 to prevent clipping
+	// Normalize all output to a consistent peak level (0.95)
+	// This ensures consistent volume across all sessions and prevents clipping
+	const targetPeak = 0.95;
 	const peak = getMaxVolume(rendered);
-	if (peak > 1.0) {
-		const scale = 1.0 / peak;
-		console.log(`Normalizing output: peak was ${peak.toFixed(4)}, scaling by ${scale.toFixed(4)}`);
+	if (peak > 0) {
+		const scale = targetPeak / peak;
+		console.log(`Normalizing output: peak was ${peak.toFixed(4)}, target ${targetPeak}, scaling by ${scale.toFixed(4)}`);
 		for (let ch = 0; ch < rendered.numberOfChannels; ch++) {
 			const data = rendered.getChannelData(ch);
 			for (let i = 0; i < data.length; i++) {
