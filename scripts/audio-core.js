@@ -213,8 +213,9 @@ async function generateAudio(options) {
 			binauralR.start(0);
 		}
 
-		// Master out
-		const master = new Tone.Gain(0).toDestination();
+		// Master out (limiter prevents clipping when signals sum above 1.0)
+		const limiter = new Tone.Limiter(-1).toDestination();
+		const master = new Tone.Gain(0).connect(limiter);
 		if (!muteIsochronic) {
 			oscGate.connect(master);
 		}
