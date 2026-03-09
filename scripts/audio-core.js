@@ -108,7 +108,7 @@ async function generateAudio(options) {
 		customNoiseVolume = null,
 		useBinaural = false,
 		binauralVolume = 0.12,
-		isochronicVolume = 0.7,
+		isochronicVolume = 0.35,
 		muteIsochronic = false
 	} = options;
 
