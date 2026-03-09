@@ -108,6 +108,7 @@ async function generateAudio(options) {
 		customNoiseVolume = null,
 		useBinaural = false,
 		binauralVolume = 0.12,
+		isochronicVolume = 0.7,
 		muteIsochronic = false
 	} = options;
 
@@ -131,7 +132,7 @@ async function generateAudio(options) {
 
 		// LFO starts at the first step frequency; later steps only change it if rampDuration is provided
 		const firstFreq = sequence[0].frequency;
-		const lfo = new Tone.LFO(firstFreq, 0, 1, "square").connect(oscGate.gain);
+		const lfo = new Tone.LFO(firstFreq, 0, isochronicVolume, "square").connect(oscGate.gain);
 
 		// Noise path: user file (looped) or built-in noise
 		const effectiveNoiseVolume = (customNoiseVolume !== null ? customNoiseVolume : 

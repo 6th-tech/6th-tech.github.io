@@ -10,6 +10,7 @@ const jsonFileInput = document.querySelector("#jsonFile");
 const audioFolderInput = document.querySelector("#audioFolder");
 const shortSessionsCheckbox = document.querySelector("#shortSessions");
 const useBinauralCheckbox = document.querySelector("#useBinaural");
+const isochronicVolumeInput = document.querySelector("#isochronicVolume");
 const alwaysMonoCheckbox = document.querySelector("#alwaysMono");
 const generateButton = document.querySelector("#generateButton");
 const statusText = document.querySelector("#statusText");
@@ -183,7 +184,8 @@ async function generateSingleAudio(config, index) {
 			alwaysMono: alwaysMonoCheckbox.checked,
 			decodedNoiseBuffer,
 			customNoiseVolume: rules.customNoiseVolume,
-			useBinaural: useBinauralCheckbox.checked
+			useBinaural: useBinauralCheckbox.checked,
+			isochronicVolume: parseFloat(isochronicVolumeInput.value)
 		};
 		
 		const audioBuffer = await generateAudio(audioOptions);
