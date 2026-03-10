@@ -330,6 +330,15 @@ function getRMS(audioBuffer) {
 	return Math.sqrt(sumSquares / totalSamples);
 }
 
+function softLimit(sample, threshold) {
+	// Below threshold: pass through unchanged
+	// Above threshold: smoothly compress using tanh curve
+	if (Math.abs(sample) <= threshold) return sample;
+	const sign = sample > 0 ? 1 : -1;
+	const excess = (Math.abs(sample) - threshold) / (1 - threshold);
+	return sign * (threshold + (1 - threshold) * Math.tanh(excess));
+}
+
 function normalizeAndLimitBuffer(audioBuffer, targetRMS, peakLimit) {
 	const currentRMS = getRMS(audioBuffer);
 	if (currentRMS === 0) return;
@@ -337,24 +346,21 @@ function normalizeAndLimitBuffer(audioBuffer, targetRMS, peakLimit) {
 	const scale = targetRMS / currentRMS;
 	console.log(`RMS normalization: current RMS=${currentRMS.toFixed(4)}, target=${targetRMS}, scale=${scale.toFixed(4)}`);
 
-	let peaksLimited = 0;
+	let samplesSoftLimited = 0;
 	for (let ch = 0; ch < audioBuffer.numberOfChannels; ch++) {
 		const data = audioBuffer.getChannelData(ch);
 		for (let i = 0; i < data.length; i++) {
 			data[i] *= scale;
-			if (data[i] > peakLimit) {
-				data[i] = peakLimit;
-				peaksLimited++;
-			} else if (data[i] < -peakLimit) {
-				data[i] = -peakLimit;
-				peaksLimited++;
+			if (Math.abs(data[i]) > peakLimit) {
+				data[i] = softLimit(data[i], peakLimit);
+				samplesSoftLimited++;
 			}
 		}
 	}
 
 	const newPeak = getMaxVolume(audioBuffer);
 	const newRMS = getRMS(audioBuffer);
-	console.log(`After normalization: RMS=${newRMS.toFixed(4)}, peak=${newPeak.toFixed(4)}, samples limited=${peaksLimited}`);
+	console.log(`After normalization: RMS=${newRMS.toFixed(4)}, peak=${newPeak.toFixed(4)}, samples soft-limited=${samplesSoftLimited}`);
 }
 
 // --------- Utility Functions ---------
