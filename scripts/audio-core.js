@@ -301,19 +301,33 @@ async function generateAudio(options) {
 		}
 	}
 
-	// Prevent clipping: if peaks exceed 1.0, scale everything down
+	// Handle clipping: count samples exceeding 1.0
 	const peak = getMaxVolume(rendered, true);
-	if (peak > 1.0) {
+	const totalSampleCount = rendered.length * rendered.numberOfChannels;
+	let clippedCount = 0;
+	for (let ch = 0; ch < rendered.numberOfChannels; ch++) {
+		const data = rendered.getChannelData(ch);
+		for (let i = 0; i < data.length; i++) {
+			if (Math.abs(data[i]) > 1.0) clippedCount++;
+		}
+	}
+
+	// Only scale down if a significant portion of samples clip (>0.01%)
+	// For a handful of outlier samples, let the WAV export clamp them (inaudible)
+	const clipRatio = clippedCount / totalSampleCount;
+	if (peak > 1.0 && clipRatio > 0.0001) {
 		const scale = 0.95 / peak;
-		console.log(`  Output peak ${peak.toFixed(4)} exceeds 1.0, scaling down by ${scale.toFixed(4)}`);
+		console.log(`  Output peak ${peak.toFixed(4)}, ${clippedCount} clipped samples (${(clipRatio*100).toFixed(4)}%) — scaling down by ${scale.toFixed(4)}`);
 		for (let ch = 0; ch < rendered.numberOfChannels; ch++) {
 			const data = rendered.getChannelData(ch);
 			for (let i = 0; i < data.length; i++) {
 				data[i] *= scale;
 			}
 		}
+	} else if (peak > 1.0) {
+		console.log(`  Output peak ${peak.toFixed(4)}, but only ${clippedCount} samples clipped — clamping (no global scaling)`);
 	} else {
-		console.log(`  Output peak ${peak.toFixed(4)}, no scaling needed`);
+		console.log(`  Output peak ${peak.toFixed(4)}, no clipping`);
 	}
 
 	return rendered; // AudioBuffer
