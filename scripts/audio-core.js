@@ -275,32 +275,23 @@ async function generateAudio(options) {
 	}, durationSec, alwaysMono ? 1 : channels);
 
 	// Post-render normalization:
-	// - Custom music sessions: normalize to 0.95 peak for consistent volume across sessions
-	// - Built-in noise sessions: only scale down if peaks exceed 1.0 (safety net)
+	// - Custom music sessions: normalize to 0.95 peak (same as working commit 70d9b0d)
+	// - Built-in noise sessions: only scale down if peaks exceed 1.0
+	const targetPeak = 0.95;
 	const peak = getMaxVolume(rendered);
-	if (decodedNoiseBuffer) {
-		// Custom music: always normalize to 0.95 (up or down) for consistent volume
-		const targetPeak = 0.95;
-		const scale = targetPeak / peak;
-		console.log(`Normalizing output (custom music): peak was ${peak.toFixed(4)}, scaling by ${scale.toFixed(4)}`);
-		for (let ch = 0; ch < rendered.numberOfChannels; ch++) {
-			const data = rendered.getChannelData(ch);
-			for (let i = 0; i < data.length; i++) {
-				data[i] *= scale;
-			}
-		}
-	} else if (peak > 1.0) {
-		// Built-in noise: only scale down if peaks exceed 1.0 (safety net)
-		const scale = 1.0 / peak;
-		console.log(`Normalizing output (noise): peak was ${peak.toFixed(4)}, scaling down by ${scale.toFixed(4)}`);
-		for (let ch = 0; ch < rendered.numberOfChannels; ch++) {
-			const data = rendered.getChannelData(ch);
-			for (let i = 0; i < data.length; i++) {
-				data[i] *= scale;
-			}
-		}
+	if (!decodedNoiseBuffer && peak <= 1.0) {
+		// Built-in noise with safe peaks: skip normalization
+		console.log(`Output peak ${peak.toFixed(4)}, no normalization needed (noise session)`);
 	} else {
-		console.log(`Output peak ${peak.toFixed(4)}, no normalization needed`);
+		const target = decodedNoiseBuffer ? targetPeak : 1.0;
+		const scale = target / peak;
+		console.log(`Normalizing output: peak was ${peak.toFixed(4)}, target ${target}, scaling by ${scale.toFixed(4)}`);
+		for (let ch = 0; ch < rendered.numberOfChannels; ch++) {
+			const data = rendered.getChannelData(ch);
+			for (let i = 0; i < data.length; i++) {
+				data[i] *= scale;
+			}
+		}
 	}
 
 	return rendered; // AudioBuffer
