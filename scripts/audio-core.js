@@ -278,10 +278,21 @@ async function generateAudio(options) {
 	// - Custom music sessions: normalize to 0.95 peak for consistent volume across sessions
 	// - Built-in noise sessions: only scale down if peaks exceed 1.0 (safety net)
 	const peak = getMaxVolume(rendered);
-	const targetPeak = decodedNoiseBuffer ? 0.95 : 1.0;
-	if (peak > targetPeak) {
+	if (decodedNoiseBuffer) {
+		// Custom music: always normalize to 0.95 (up or down) for consistent volume
+		const targetPeak = 0.95;
 		const scale = targetPeak / peak;
-		console.log(`Normalizing output: peak was ${peak.toFixed(4)}, target ${targetPeak}, scaling by ${scale.toFixed(4)}`);
+		console.log(`Normalizing output (custom music): peak was ${peak.toFixed(4)}, scaling by ${scale.toFixed(4)}`);
+		for (let ch = 0; ch < rendered.numberOfChannels; ch++) {
+			const data = rendered.getChannelData(ch);
+			for (let i = 0; i < data.length; i++) {
+				data[i] *= scale;
+			}
+		}
+	} else if (peak > 1.0) {
+		// Built-in noise: only scale down if peaks exceed 1.0 (safety net)
+		const scale = 1.0 / peak;
+		console.log(`Normalizing output (noise): peak was ${peak.toFixed(4)}, scaling down by ${scale.toFixed(4)}`);
 		for (let ch = 0; ch < rendered.numberOfChannels; ch++) {
 			const data = rendered.getChannelData(ch);
 			for (let i = 0; i < data.length; i++) {
@@ -289,7 +300,7 @@ async function generateAudio(options) {
 			}
 		}
 	} else {
-		console.log(`Output peak ${peak.toFixed(4)} is within target ${targetPeak}, no normalization needed`);
+		console.log(`Output peak ${peak.toFixed(4)}, no normalization needed`);
 	}
 
 	return rendered; // AudioBuffer
