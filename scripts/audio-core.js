@@ -112,7 +112,6 @@ async function generateAudio(options) {
 		muteIsochronic = false
 	} = options;
 
-	let maxVolume = 1;
 	const durationSec = Math.max(0.01, Number(length) || 0);
 	if (!sequence.length) throw new Error("Sequence is empty or invalid.");
 
@@ -124,30 +123,233 @@ async function generateAudio(options) {
 	console.log(`  Binaural: ${useBinaural ? `on (${binauralVolume})` : 'off'} | Main volume: ${mainVolume}`);
 	console.log(`  Duration: ${(durationSec / 60).toFixed(1)}min`);
 
-	// Choose channel count dynamically (force stereo if binaural, or preserve stereo if input noise is stereo)
-	const channels = alwaysMono ? 1 : (useBinaural ? 2 : (decodedNoiseBuffer && decodedNoiseBuffer.numberOfChannels > 1 ? 2 : 1));
+	// Choose channel count dynamically
+	const numChannels = alwaysMono ? 1 : (useBinaural ? 2 : (decodedNoiseBuffer && decodedNoiseBuffer.numberOfChannels > 1 ? 2 : 1));
 
-	// Compute music volume scaling factor (used for manual mixing after render)
-	let musicScaleFactor = 1;
+	// For custom music sessions: generate everything with pure math (no Tone.js artifacts)
+	// For built-in noise sessions: use Tone.js (needed for Noise generator and AutoFilter)
 	if (decodedNoiseBuffer) {
-		maxVolume = getMaxVolume(decodedNoiseBuffer);
-		musicScaleFactor = (customNoiseVolume !== null ? customNoiseVolume : defaultBackgroundVolume) / maxVolume;
-		console.log(`  Music buffer: peak=${maxVolume.toFixed(4)}, scale factor=${musicScaleFactor.toFixed(4)}`);
-		console.log(`  Music buffer duration: ${decodedNoiseBuffer.duration.toFixed(2)}s, session: ${durationSec.toFixed(2)}s`);
+		return generateWithCustomMusic(options, durationSec, numChannels);
+	} else {
+		return generateWithNoise(options, durationSec, numChannels);
 	}
+}
+
+// --------- Pure math generation for custom music sessions ---------
+function generateWithCustomMusic(options, durationSec, numChannels) {
+	const {
+		sequence, carrierFreq, mainVolume = 0.7, useNoiseFade = false,
+		decodedNoiseBuffer, customNoiseVolume = null,
+		useBinaural = false, binauralVolume = 0.12,
+		isochronicVolume = 0.35, muteIsochronic = false
+	} = options;
+
+	const sampleRate = 44100;
+	const totalSamples = Math.ceil(durationSec * sampleRate);
+	const headroom = Math.min(mainVolume, 0.89);
+
+	// Music volume scaling
+	const musicPeak = getMaxVolume(decodedNoiseBuffer);
+	const musicScale = (customNoiseVolume !== null ? customNoiseVolume : defaultBackgroundVolume) / musicPeak;
+	console.log(`  Music buffer: peak=${musicPeak.toFixed(4)}, scale=${musicScale.toFixed(4)}`);
+	console.log(`  Music duration: ${decodedNoiseBuffer.duration.toFixed(2)}s, sampleRate: ${decodedNoiseBuffer.sampleRate}`);
+
+	// Build LFO frequency schedule: array of {startTime, endTime, startFreq, endFreq}
+	const lfoSchedule = buildLfoSchedule(sequence);
+
+	// Create output buffer
+	const ctx = new OfflineAudioContext(numChannels, totalSamples, sampleRate);
+	const outputBuffer = ctx.createBuffer(numChannels, totalSamples, sampleRate);
+
+	// Fade envelope params
+	const fadeInEnd = Math.min(fadeIn, durationSec);
+	const fadeOutStart = Math.max(0, durationSec - Math.max(0, fadeOut + finalBuffer));
+	const fadeOutEnd = Math.min(durationSec, fadeOutStart + fadeOut);
+
+	// Music params
+	const musicSR = decodedNoiseBuffer.sampleRate;
+	const musicLen = decodedNoiseBuffer.length;
+	const musicChannels = decodedNoiseBuffer.numberOfChannels;
+	const musicLenInSamples = Math.round(musicLen * sampleRate / musicSR);
+	const noiseFadeSamples = noiseFade * sampleRate;
+
+	console.log(`  Pure math render: ${numChannels}ch, ${totalSamples} samples, ${(totalSamples/sampleRate/60).toFixed(1)}min`);
+
+	// Get channel data references
+	const outChannels = [];
+	for (let ch = 0; ch < numChannels; ch++) {
+		outChannels.push(outputBuffer.getChannelData(ch));
+	}
+	const musicDataChannels = [];
+	for (let ch = 0; ch < numChannels; ch++) {
+		const musicCh = ch < musicChannels ? ch : 0;
+		musicDataChannels.push(decodedNoiseBuffer.getChannelData(musicCh));
+	}
+
+	// Phase accumulators
+	let carrierPhase = 0;
+	let lfoPhase = 0;
+	let binauralLPhase = 0;
+	let binauralRPhase = 0;
+
+	const twoPi = 2 * Math.PI;
+	const dCarrier = twoPi * carrierFreq / sampleRate;
+
+	for (let i = 0; i < totalSamples; i++) {
+		const t = i / sampleRate;
+
+		// --- Master fade envelope ---
+		let masterGain;
+		if (t < fadeInEnd) {
+			masterGain = headroom * (t / fadeInEnd);
+		} else if (t >= fadeOutStart && t < fadeOutEnd) {
+			masterGain = headroom * (1 - (t - fadeOutStart) / (fadeOutEnd - fadeOutStart));
+		} else if (t >= fadeOutEnd) {
+			masterGain = 0;
+		} else {
+			masterGain = headroom;
+		}
+
+		// --- Binaural fade envelope (same timing, different target) ---
+		let binGain = 0;
+		if (useBinaural && numChannels === 2) {
+			if (t < fadeInEnd) {
+				binGain = binauralVolume * (t / fadeInEnd);
+			} else if (t >= fadeOutStart && t < fadeOutEnd) {
+				binGain = binauralVolume * (1 - (t - fadeOutStart) / (fadeOutEnd - fadeOutStart));
+			} else if (t >= fadeOutEnd) {
+				binGain = 0;
+			} else {
+				binGain = binauralVolume;
+			}
+		}
+
+		// --- LFO frequency (with ramps) ---
+		const lfoFreq = getLfoFreqAtTime(t, lfoSchedule);
+
+		// --- Accumulate phases ---
+		carrierPhase += dCarrier;
+		if (carrierPhase > twoPi) carrierPhase -= twoPi;
+
+		lfoPhase += twoPi * lfoFreq / sampleRate;
+		if (lfoPhase > twoPi) lfoPhase -= twoPi;
+
+		// --- Isochronic tone: carrier * sine LFO envelope ---
+		let isochronicSample = 0;
+		if (!muteIsochronic) {
+			const carrier = Math.sin(carrierPhase);
+			const lfoEnvelope = (Math.sin(lfoPhase) + 1) / 2 * isochronicVolume;
+			isochronicSample = carrier * lfoEnvelope;
+		}
+
+		// --- Binaural beats ---
+		let binauralL = 0, binauralR = 0;
+		if (useBinaural && numChannels === 2) {
+			binauralLPhase += dCarrier;
+			if (binauralLPhase > twoPi) binauralLPhase -= twoPi;
+			binauralRPhase += twoPi * (carrierFreq + lfoFreq) / sampleRate;
+			if (binauralRPhase > twoPi) binauralRPhase -= twoPi;
+			binauralL = Math.sin(binauralLPhase) * binGain;
+			binauralR = Math.sin(binauralRPhase) * binGain;
+		}
+
+		// --- Music sample (looping, with linear interpolation) ---
+		const musicPos = (i * musicSR / sampleRate) % musicLen;
+		const idx0 = Math.floor(musicPos);
+		const idx1 = (idx0 + 1) % musicLen;
+		const frac = musicPos - idx0;
+
+		// Noise fade at loop boundaries
+		let nfGain = 1.0;
+		if (useNoiseFade) {
+			const posInSegment = (i % musicLenInSamples);
+			const segmentLen = Math.min(musicLenInSamples, totalSamples - (i - posInSegment));
+			if (posInSegment < noiseFadeSamples) {
+				nfGain = posInSegment / noiseFadeSamples;
+			}
+			if (posInSegment > segmentLen - noiseFadeSamples) {
+				nfGain = Math.min(nfGain, (segmentLen - posInSegment) / noiseFadeSamples);
+			}
+		}
+
+		// --- Write to each channel ---
+		for (let ch = 0; ch < numChannels; ch++) {
+			const musicSample = (musicDataChannels[ch][idx0] * (1 - frac) + musicDataChannels[ch][idx1] * frac) * musicScale * nfGain;
+			const binSample = (ch === 0) ? binauralL : binauralR;
+			outChannels[ch][i] = (isochronicSample + musicSample) * masterGain + binSample;
+		}
+	}
+
+	// Log output stats
+	const peak = getMaxVolume(outputBuffer, true);
+	console.log(`  Output peak ${peak.toFixed(4)}, no Tone.js involved`);
+
+	return outputBuffer;
+}
+
+// Build a schedule of LFO frequencies from the sequence
+function buildLfoSchedule(sequence) {
+	const schedule = [];
+	let currentTime = 0;
+	let currentFreq = sequence[0].frequency;
+
+	for (const step of sequence) {
+		if (step.rampDuration) {
+			// Ramp from current frequency to step frequency
+			schedule.push({
+				startTime: currentTime,
+				endTime: currentTime + step.rampDuration,
+				startFreq: currentFreq,
+				endFreq: step.frequency
+			});
+			currentTime += step.rampDuration;
+			currentFreq = step.frequency;
+		}
+		// Hold at step frequency for duration
+		schedule.push({
+			startTime: currentTime,
+			endTime: currentTime + step.duration,
+			startFreq: currentFreq,
+			endFreq: currentFreq
+		});
+		currentTime += step.duration;
+	}
+	return schedule;
+}
+
+// Get the LFO frequency at a given time using the schedule
+function getLfoFreqAtTime(t, schedule) {
+	for (const seg of schedule) {
+		if (t >= seg.startTime && t < seg.endTime) {
+			if (seg.startFreq === seg.endFreq) return seg.startFreq;
+			const frac = (t - seg.startTime) / (seg.endTime - seg.startTime);
+			return seg.startFreq + (seg.endFreq - seg.startFreq) * frac;
+		}
+	}
+	// Past end of schedule, use last frequency
+	return schedule[schedule.length - 1].endFreq;
+}
+
+// --------- Tone.js generation for built-in noise sessions ---------
+async function generateWithNoise(options, durationSec, numChannels) {
+	const {
+		sequence, carrierFreq, noiseType = 'brown', mainVolume = 0.7,
+		useNoiseModulation = false, alwaysMono = false,
+		useBinaural = false, binauralVolume = 0.12,
+		isochronicVolume = 0.35, muteIsochronic = false
+	} = options;
 
 	const rendered = await Tone.Offline(({ transport }) => {
 		// Carrier gated by LFO -> master
 		const oscGate = new Tone.Gain(0);
 		const osc = new Tone.Oscillator(carrierFreq, "sine").connect(oscGate);
 
-		// LFO starts at the first step frequency; later steps only change it if rampDuration is provided
 		const firstFreq = sequence[0].frequency;
 		const lfo = new Tone.LFO({ frequency: firstFreq, min: 0, max: isochronicVolume, type: "sine" }).connect(oscGate.gain);
 
-		// Binaural layer (two continuous oscillators, hard-panned L/R)
+		// Binaural layer
 		let binauralL, binauralR, panL, panR, binauralGain;
-		if (useBinaural && channels === 2) {
+		if (useBinaural && numChannels === 2) {
 			const firstBeatFreq = sequence[0].frequency;
 			binauralL = new Tone.Oscillator(carrierFreq, "sine");
 			binauralR = new Tone.Oscillator(carrierFreq + firstBeatFreq, "sine");
@@ -168,33 +370,30 @@ async function generateAudio(options) {
 			oscGate.connect(master);
 		}
 
-		// Built-in noise (white/pink/brown) goes through Tone.js; custom music is mixed manually after render
-		if (!decodedNoiseBuffer) {
-			const noiseGain = new Tone.Gain(defaultBackgroundVolume);
-			let filter = null;
-			if (useNoiseModulation) {
-				filter = new Tone.AutoFilter({
-					frequency: "8m",
-					min: 2000,
-					max: 15000,
-					Q: 0.5
-				}).connect(noiseGain);
-				filter.start(0);
-			}
-			const toneNoise = new Tone.Noise(noiseType.toLowerCase()).connect(filter || noiseGain);
-			toneNoise.start(0);
-			noiseGain.connect(master);
+		// Built-in noise
+		const noiseGain = new Tone.Gain(defaultBackgroundVolume);
+		let filter = null;
+		if (useNoiseModulation) {
+			filter = new Tone.AutoFilter({
+				frequency: "8m",
+				min: 2000,
+				max: 15000,
+				Q: 0.5
+			}).connect(noiseGain);
+			filter.start(0);
 		}
+		const toneNoise = new Tone.Noise(noiseType.toLowerCase()).connect(filter || noiseGain);
+		toneNoise.start(0);
+		noiseGain.connect(master);
 
 		if (binauralGain) {
 			binauralGain.connect(master);
 		}
 
-		// Start sources
 		osc.start(0);
 		lfo.start(0);
 
-		// Schedule ramps on the OFFLINE transport
+		// Schedule frequency ramps
 		let currentTime = 0;
 		sequence.forEach(step => {
 			if (step.rampDuration) {
@@ -216,7 +415,6 @@ async function generateAudio(options) {
 		master.gain.setValueAtTime(headroom, fadeOutStart);
 		master.gain.linearRampToValueAtTime(0, Math.min(durationSec, fadeOutStart + fadeOut));
 
-		// Binaural layer fade
 		if (binauralGain) {
 			binauralGain.gain.setValueAtTime(0, 0);
 			binauralGain.gain.linearRampToValueAtTime(binauralVolume, Math.min(fadeIn, durationSec));
@@ -225,112 +423,24 @@ async function generateAudio(options) {
 		}
 
 		transport.start(0);
-	}, durationSec, alwaysMono ? 1 : channels);
+	}, durationSec, alwaysMono ? 1 : numChannels);
 
-	// Log Tone.js render peak before music mixing
-	const toneOnlyPeak = getMaxVolume(rendered);
-	console.log(`  Tone.js render peak (before music): ${toneOnlyPeak.toFixed(4)}`);
-
-	// Manual music mixing: bypass Tone.Player entirely to avoid unexplained amplification
-	if (decodedNoiseBuffer) {
-		const sampleRate = rendered.sampleRate;
-		const musicSR = decodedNoiseBuffer.sampleRate;
-		const musicLen = decodedNoiseBuffer.length;
-		const musicChannels = decodedNoiseBuffer.numberOfChannels;
-		const outChannels = rendered.numberOfChannels;
-		const totalSamples = rendered.length;
-
-		console.log(`  Sample rates - output: ${sampleRate}, music: ${musicSR}`);
-
-		// Compute the same master fade envelope used by Tone.js render
-		const headroom = Math.min(mainVolume, 0.89);
-		const fadeInSamples = Math.min(fadeIn, durationSec) * sampleRate;
-		const fadeOutStartSec = Math.max(0, durationSec - Math.max(0, fadeOut + finalBuffer));
-		const fadeOutStartSample = fadeOutStartSec * sampleRate;
-		const fadeOutEndSample = Math.min(durationSec, fadeOutStartSec + fadeOut) * sampleRate;
-
-		// Noise fade envelope (3s fade in/out at loop boundaries)
-		const noiseFadeSamples = noiseFade * sampleRate;
-		const musicLenInOutputSamples = Math.round(musicLen * sampleRate / musicSR);
-
-		console.log(`  Manual music mix: scale=${musicScaleFactor.toFixed(4)}, musicDur=${(musicLen/musicSR).toFixed(2)}s, segments=${Math.ceil(totalSamples/musicLenInOutputSamples)}`);
-
-		for (let ch = 0; ch < outChannels; ch++) {
-			const outData = rendered.getChannelData(ch);
-			// Use the corresponding music channel, or channel 0 if music is mono
-			const musicCh = ch < musicChannels ? ch : 0;
-			const musicData = decodedNoiseBuffer.getChannelData(musicCh);
-
-			for (let i = 0; i < totalSamples; i++) {
-				// Get music sample (looping, with linear interpolation for quality)
-				const musicPos = (i * musicSR / sampleRate) % musicLen;
-				const idx0 = Math.floor(musicPos);
-				const idx1 = (idx0 + 1) % musicLen;
-				const frac = musicPos - idx0;
-				const musicSample = (musicData[idx0] * (1 - frac) + musicData[idx1] * frac) * musicScaleFactor;
-
-				// Master fade envelope (same as Tone.js render)
-				let masterGain;
-				if (i < fadeInSamples) {
-					masterGain = headroom * (i / fadeInSamples);
-				} else if (i >= fadeOutStartSample && i < fadeOutEndSample) {
-					masterGain = headroom * (1 - (i - fadeOutStartSample) / (fadeOutEndSample - fadeOutStartSample));
-				} else if (i >= fadeOutEndSample) {
-					masterGain = 0;
-				} else {
-					masterGain = headroom;
-				}
-
-				// Noise fade at loop boundaries (if useNoiseFade)
-				let noiseFadeGain = 1.0;
-				if (useNoiseFade) {
-					const posInSegment = (i % musicLenInOutputSamples);
-					const segmentLen = Math.min(musicLenInOutputSamples, totalSamples - (i - posInSegment));
-					// Fade in at start of segment
-					if (posInSegment < noiseFadeSamples) {
-						noiseFadeGain = posInSegment / noiseFadeSamples;
-					}
-					// Fade out at end of segment
-					if (posInSegment > segmentLen - noiseFadeSamples) {
-						noiseFadeGain = Math.min(noiseFadeGain, (segmentLen - posInSegment) / noiseFadeSamples);
-					}
-				}
-
-				outData[i] += musicSample * masterGain * noiseFadeGain;
-			}
-		}
-	}
-
-	// Handle clipping: count samples exceeding 1.0
+	// Log output stats
 	const peak = getMaxVolume(rendered, true);
-	const totalSampleCount = rendered.length * rendered.numberOfChannels;
-	let clippedCount = 0;
-	for (let ch = 0; ch < rendered.numberOfChannels; ch++) {
-		const data = rendered.getChannelData(ch);
-		for (let i = 0; i < data.length; i++) {
-			if (Math.abs(data[i]) > 1.0) clippedCount++;
-		}
-	}
-
-	// Only scale down if a significant portion of samples clip (>0.01%)
-	// For a handful of outlier samples, let the WAV export clamp them (inaudible)
-	const clipRatio = clippedCount / totalSampleCount;
-	if (peak > 1.0 && clipRatio > 0.0001) {
+	if (peak > 1.0) {
 		const scale = 0.95 / peak;
-		console.log(`  Output peak ${peak.toFixed(4)}, ${clippedCount} clipped samples (${(clipRatio*100).toFixed(4)}%) — scaling down by ${scale.toFixed(4)}`);
+		console.log(`  Output peak ${peak.toFixed(4)} exceeds 1.0, scaling down by ${scale.toFixed(4)}`);
 		for (let ch = 0; ch < rendered.numberOfChannels; ch++) {
 			const data = rendered.getChannelData(ch);
 			for (let i = 0; i < data.length; i++) {
 				data[i] *= scale;
 			}
 		}
-	} else if (peak > 1.0) {
-		console.log(`  Output peak ${peak.toFixed(4)}, but only ${clippedCount} samples clipped — clamping (no global scaling)`);
 	} else {
-		console.log(`  Output peak ${peak.toFixed(4)}, no clipping`);
+		console.log(`  Output peak ${peak.toFixed(4)}, no scaling needed`);
 	}
 
-	return rendered; // AudioBuffer
+	return rendered;
 }
 
 // --------- Download Function ---------
