@@ -165,7 +165,7 @@ async function generateAudio(options) {
 						const player = new Tone.Player({
 							url: toneBuffer,
 							loop: false,
-							volume: 1,
+							volume: 0,
 							fadeIn: noiseFade,
 							fadeOut: noiseFade
 						}).connect(filter || noiseGain);
@@ -178,7 +178,7 @@ async function generateAudio(options) {
 				const player = new Tone.Player({
 					url: toneBuffer,
 					loop: true,
-					volume: 1
+					volume: 0
 				}).connect(filter || noiseGain);
 				player.start(0);
 			}
