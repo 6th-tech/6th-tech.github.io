@@ -136,7 +136,7 @@ async function generateAudio(options) {
 	if (decodedNoiseBuffer) {
 		const peakBefore = getMaxVolume(decodedNoiseBuffer);
 		const rmsBefore = getRMS(decodedNoiseBuffer);
-		console.log(`  Music buffer before normalization: peak=${peakBefore.toFixed(4)}, RMS=${rmsBefore.toFixed(4)}`);
+		console.log(`Music buffer before normalization: peak=${peakBefore.toFixed(4)}, RMS=${rmsBefore.toFixed(4)}`);
 		normalizeAndLimitBuffer(decodedNoiseBuffer, 0.15, 0.9);
 	}
 
@@ -152,6 +152,7 @@ async function generateAudio(options) {
 		// Noise path: user file (looped) or built-in noise
 		// Custom audio files are already RMS-normalized, so apply volume directly
 		const effectiveNoiseVolume = customNoiseVolume !== null ? customNoiseVolume : defaultBackgroundVolume;
+		console.log("Background sound volume: ", effectiveNoiseVolume);
 		const noiseGain = new Tone.Gain(effectiveNoiseVolume);
 
 		let filter = null;
@@ -274,18 +275,13 @@ async function generateAudio(options) {
 		transport.start(0);
 	}, durationSec, alwaysMono ? 1 : channels);
 
-	// Post-render normalization:
-	// - Custom music sessions: normalize to 0.95 peak (same as working commit 70d9b0d)
-	// - Built-in noise sessions: only scale down if peaks exceed 1.0
+	// Normalize all output to a consistent peak level (0.95)
+	// This ensures consistent volume across all sessions and prevents clipping
 	const targetPeak = 0.95;
 	const peak = getMaxVolume(rendered);
-	if (!decodedNoiseBuffer && peak <= 1.0) {
-		// Built-in noise with safe peaks: skip normalization
-		console.log(`Output peak ${peak.toFixed(4)}, no normalization needed (noise session)`);
-	} else {
-		const target = decodedNoiseBuffer ? targetPeak : 1.0;
-		const scale = target / peak;
-		console.log(`Normalizing output: peak was ${peak.toFixed(4)}, target ${target}, scaling by ${scale.toFixed(4)}`);
+	if (peak > 0) {
+		const scale = targetPeak / peak;
+		console.log(`Normalizing output: peak was ${peak.toFixed(4)}, target ${targetPeak}, scaling by ${scale.toFixed(4)}`);
 		for (let ch = 0; ch < rendered.numberOfChannels; ch++) {
 			const data = rendered.getChannelData(ch);
 			for (let i = 0; i < data.length; i++) {
