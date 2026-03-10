@@ -261,11 +261,12 @@ async function generateAudio(options) {
 		transport.start(0);
 	}, durationSec, alwaysMono ? 1 : channels);
 
-	// Normalize all output to a consistent peak level (0.95)
-	// This ensures consistent volume across all sessions and prevents clipping
-	const targetPeak = 0.95;
+	// Post-render normalization:
+	// - Custom music sessions: normalize to 0.95 peak for consistent volume across sessions
+	// - Built-in noise sessions: only scale down if peaks exceed 1.0 (safety net)
 	const peak = getMaxVolume(rendered);
-	if (peak > 0) {
+	const targetPeak = decodedNoiseBuffer ? 0.95 : 1.0;
+	if (peak > targetPeak) {
 		const scale = targetPeak / peak;
 		console.log(`Normalizing output: peak was ${peak.toFixed(4)}, target ${targetPeak}, scaling by ${scale.toFixed(4)}`);
 		for (let ch = 0; ch < rendered.numberOfChannels; ch++) {
@@ -274,6 +275,8 @@ async function generateAudio(options) {
 				data[i] *= scale;
 			}
 		}
+	} else {
+		console.log(`Output peak ${peak.toFixed(4)} is within target ${targetPeak}, no normalization needed`);
 	}
 
 	return rendered; // AudioBuffer
