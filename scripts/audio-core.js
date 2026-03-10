@@ -115,6 +115,20 @@ async function generateAudio(options) {
 	const durationSec = Math.max(0.01, Number(length) || 0);
 	if (!sequence.length) throw new Error("Sequence is empty or invalid.");
 
+	// Session details log
+	const backgroundType = decodedNoiseBuffer ? 'custom music' : `${noiseType} noise`;
+	const backgroundVolume = customNoiseVolume !== null ? customNoiseVolume : defaultBackgroundVolume;
+	console.log(`--- Session config ---`);
+	console.log(`  Background: ${backgroundType} (volume: ${backgroundVolume})`);
+	console.log(`  Carrier: ${carrierFreq}Hz | Isochronic: ${muteIsochronic ? 'muted' : isochronicVolume}`);
+	console.log(`  Binaural: ${useBinaural ? `on (${binauralVolume})` : 'off'} | Main volume: ${mainVolume}`);
+	console.log(`  Duration: ${(durationSec / 60).toFixed(1)}min | Channels: ${alwaysMono ? 'mono (forced)' : 'auto'}`);
+	if (decodedNoiseBuffer) {
+		console.log(`  Noise fade: ${useNoiseFade} | Noise modulation: ${useNoiseModulation}`);
+	} else {
+		console.log(`  Noise modulation: ${useNoiseModulation}`);
+	}
+
 	// Choose channel count dynamically (force stereo if binaural, or preserve stereo if input noise is stereo)
 	const channels = alwaysMono ? 1 : (useBinaural ? 2 : (decodedNoiseBuffer && decodedNoiseBuffer.numberOfChannels > 1 ? 2 : 1));
 
@@ -122,7 +136,7 @@ async function generateAudio(options) {
 	if (decodedNoiseBuffer) {
 		const peakBefore = getMaxVolume(decodedNoiseBuffer);
 		const rmsBefore = getRMS(decodedNoiseBuffer);
-		console.log(`Music buffer before normalization: peak=${peakBefore.toFixed(4)}, RMS=${rmsBefore.toFixed(4)}`);
+		console.log(`  Music buffer before normalization: peak=${peakBefore.toFixed(4)}, RMS=${rmsBefore.toFixed(4)}`);
 		normalizeAndLimitBuffer(decodedNoiseBuffer, 0.15, 0.9);
 	}
 
@@ -138,7 +152,6 @@ async function generateAudio(options) {
 		// Noise path: user file (looped) or built-in noise
 		// Custom audio files are already RMS-normalized, so apply volume directly
 		const effectiveNoiseVolume = customNoiseVolume !== null ? customNoiseVolume : defaultBackgroundVolume;
-		console.log("Background sound volume: ", effectiveNoiseVolume);
 		const noiseGain = new Tone.Gain(effectiveNoiseVolume);
 
 		let filter = null;
