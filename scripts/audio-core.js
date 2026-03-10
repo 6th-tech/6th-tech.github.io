@@ -127,10 +127,18 @@ async function generateAudio(options) {
 	// Choose channel count dynamically (force stereo if binaural, or preserve stereo if input noise is stereo)
 	const channels = alwaysMono ? 1 : (useBinaural ? 2 : (decodedNoiseBuffer && decodedNoiseBuffer.numberOfChannels > 1 ? 2 : 1));
 
-	// Log the maximum volume of the decoded noise buffer for debugging
+	// Pre-scale custom music buffer to target volume before giving it to Tone.js
+	// This avoids relying on Gain nodes which can produce unexpected levels
 	if (decodedNoiseBuffer) {
 		maxVolume = getMaxVolume(decodedNoiseBuffer);
-		console.log(`  Max volume of decoded noise buffer: ${maxVolume.toFixed(4)} (${(maxVolume * 100).toFixed(2)}%)`);
+		const targetVolume = (customNoiseVolume !== null ? customNoiseVolume : 1.0) / maxVolume;
+		console.log(`  Music buffer: peak=${maxVolume.toFixed(4)}, pre-scaling by ${targetVolume.toFixed(4)}`);
+		for (let ch = 0; ch < decodedNoiseBuffer.numberOfChannels; ch++) {
+			const data = decodedNoiseBuffer.getChannelData(ch);
+			for (let i = 0; i < data.length; i++) {
+				data[i] *= targetVolume;
+			}
+		}
 	}
 
 	const rendered = await Tone.Offline(({ transport }) => {
@@ -142,9 +150,8 @@ async function generateAudio(options) {
 		const firstFreq = sequence[0].frequency;
 		const lfo = new Tone.LFO(firstFreq, 0, isochronicVolume, "square").connect(oscGate.gain);
 
-		// Noise path: user file (looped) or built-in noise
-		const effectiveNoiseVolume = (customNoiseVolume !== null ? customNoiseVolume :
-			(decodedNoiseBuffer ? 1.0 : defaultBackgroundVolume)) / maxVolume;
+		// Noise path: custom music is already pre-scaled, built-in noise uses defaultBackgroundVolume
+		const effectiveNoiseVolume = decodedNoiseBuffer ? 1.0 : defaultBackgroundVolume;
 		console.log("  Effective noise volume: ", effectiveNoiseVolume);
 		const noiseGain = new Tone.Gain(effectiveNoiseVolume);
 
