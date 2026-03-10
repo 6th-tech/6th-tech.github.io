@@ -112,32 +112,25 @@ async function generateAudio(options) {
 		muteIsochronic = false
 	} = options;
 
+	let maxVolume = 1;
 	const durationSec = Math.max(0.01, Number(length) || 0);
 	if (!sequence.length) throw new Error("Sequence is empty or invalid.");
 
 	// Session details log
 	const backgroundType = decodedNoiseBuffer ? 'custom music' : `${noiseType} noise`;
-	const backgroundVolume = customNoiseVolume !== null ? customNoiseVolume : defaultBackgroundVolume;
 	console.log(`--- Session config ---`);
-	console.log(`  Background: ${backgroundType} (volume: ${backgroundVolume})`);
+	console.log(`  Background: ${backgroundType}`);
 	console.log(`  Carrier: ${carrierFreq}Hz | Isochronic: ${muteIsochronic ? 'muted' : isochronicVolume}`);
 	console.log(`  Binaural: ${useBinaural ? `on (${binauralVolume})` : 'off'} | Main volume: ${mainVolume}`);
-	console.log(`  Duration: ${(durationSec / 60).toFixed(1)}min | Channels: ${alwaysMono ? 'mono (forced)' : 'auto'}`);
-	if (decodedNoiseBuffer) {
-		console.log(`  Noise fade: ${useNoiseFade} | Noise modulation: ${useNoiseModulation}`);
-	} else {
-		console.log(`  Noise modulation: ${useNoiseModulation}`);
-	}
+	console.log(`  Duration: ${(durationSec / 60).toFixed(1)}min`);
 
 	// Choose channel count dynamically (force stereo if binaural, or preserve stereo if input noise is stereo)
 	const channels = alwaysMono ? 1 : (useBinaural ? 2 : (decodedNoiseBuffer && decodedNoiseBuffer.numberOfChannels > 1 ? 2 : 1));
 
-	// Normalize custom audio files by RMS for consistent perceived loudness, then limit peaks
+	// Log the maximum volume of the decoded noise buffer for debugging
 	if (decodedNoiseBuffer) {
-		const peakBefore = getMaxVolume(decodedNoiseBuffer);
-		const rmsBefore = getRMS(decodedNoiseBuffer);
-		console.log(`Music buffer before normalization: peak=${peakBefore.toFixed(4)}, RMS=${rmsBefore.toFixed(4)}`);
-		normalizeAndLimitBuffer(decodedNoiseBuffer, 0.15, 0.9);
+		maxVolume = getMaxVolume(decodedNoiseBuffer);
+		console.log(`  Max volume of decoded noise buffer: ${maxVolume.toFixed(4)} (${(maxVolume * 100).toFixed(2)}%)`);
 	}
 
 	const rendered = await Tone.Offline(({ transport }) => {
@@ -150,9 +143,9 @@ async function generateAudio(options) {
 		const lfo = new Tone.LFO(firstFreq, 0, isochronicVolume, "square").connect(oscGate.gain);
 
 		// Noise path: user file (looped) or built-in noise
-		// Custom audio files are already RMS-normalized, so apply volume directly
-		const effectiveNoiseVolume = customNoiseVolume !== null ? customNoiseVolume : defaultBackgroundVolume;
-		console.log("Background sound volume: ", effectiveNoiseVolume);
+		const effectiveNoiseVolume = (customNoiseVolume !== null ? customNoiseVolume :
+			(decodedNoiseBuffer ? 1.0 : defaultBackgroundVolume)) / maxVolume;
+		console.log("  Effective noise volume: ", effectiveNoiseVolume);
 		const noiseGain = new Tone.Gain(effectiveNoiseVolume);
 
 		let filter = null;
@@ -168,7 +161,7 @@ async function generateAudio(options) {
 
 		if (decodedNoiseBuffer) {
 			const toneBuffer = new Tone.Buffer(decodedNoiseBuffer);
-			console.log("Using noise fade: ", useNoiseFade);
+			console.log("  Using noise fade: ", useNoiseFade);
 			if (useNoiseFade) {
 				const segDur = decodedNoiseBuffer.duration;
 				for (let t = 0; t < durationSec; t += segDur) {
@@ -183,7 +176,7 @@ async function generateAudio(options) {
 							fadeIn: noiseFade,
 							fadeOut: noiseFade
 						}).connect(filter || noiseGain);
-						
+
 						player.start(start);
 						player.stop(stop);
 					}
@@ -275,21 +268,6 @@ async function generateAudio(options) {
 		transport.start(0);
 	}, durationSec, alwaysMono ? 1 : channels);
 
-	// Normalize all output to a consistent peak level (0.95)
-	// This ensures consistent volume across all sessions and prevents clipping
-	const targetPeak = 0.95;
-	const peak = getMaxVolume(rendered);
-	if (peak > 0) {
-		const scale = targetPeak / peak;
-		console.log(`Normalizing output: peak was ${peak.toFixed(4)}, target ${targetPeak}, scaling by ${scale.toFixed(4)}`);
-		for (let ch = 0; ch < rendered.numberOfChannels; ch++) {
-			const data = rendered.getChannelData(ch);
-			for (let i = 0; i < data.length; i++) {
-				data[i] *= scale;
-			}
-		}
-	}
-
 	return rendered; // AudioBuffer
 }
 
@@ -303,7 +281,7 @@ function downloadWav(buffer, fileName) {
 	a.href = url;
 	a.download = fileName;
 	a.click();
-	
+
 	// Clean up the URL after a short delay
 	setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
@@ -311,11 +289,11 @@ function downloadWav(buffer, fileName) {
 // --------- Audio Analysis Functions ---------
 function getMaxVolume(audioBuffer) {
 	if (!audioBuffer) return 0;
-	
+
 	let maxVolume = 0;
 	const numberOfChannels = audioBuffer.numberOfChannels;
 	const length = audioBuffer.length;
-	
+
 	// Check all channels to find the absolute maximum amplitude
 	for (let channel = 0; channel < numberOfChannels; channel++) {
 		const channelData = audioBuffer.getChannelData(channel);
@@ -326,47 +304,8 @@ function getMaxVolume(audioBuffer) {
 			}
 		}
 	}
-	
+
 	return maxVolume;
-}
-
-// --------- Audio Normalization Functions ---------
-function getRMS(audioBuffer) {
-	let sumSquares = 0;
-	let totalSamples = 0;
-	for (let ch = 0; ch < audioBuffer.numberOfChannels; ch++) {
-		const data = audioBuffer.getChannelData(ch);
-		for (let i = 0; i < data.length; i++) {
-			sumSquares += data[i] * data[i];
-		}
-		totalSamples += data.length;
-	}
-	return Math.sqrt(sumSquares / totalSamples);
-}
-
-function normalizeAndLimitBuffer(audioBuffer, targetRMS, peakLimit) {
-	const currentRMS = getRMS(audioBuffer);
-	if (currentRMS === 0) return;
-
-	const currentPeak = getMaxVolume(audioBuffer);
-	const rmsScale = targetRMS / currentRMS;
-	const peakScale = peakLimit / currentPeak;
-	// Use whichever scale is smaller to avoid exceeding peak limit
-	const scale = Math.min(rmsScale, peakScale);
-	const wasPeakLimited = peakScale < rmsScale;
-
-	console.log(`RMS normalization: RMS scale=${rmsScale.toFixed(4)}, peak scale=${peakScale.toFixed(4)}, using=${scale.toFixed(4)}${wasPeakLimited ? ' (peak-limited)' : ''}`);
-
-	for (let ch = 0; ch < audioBuffer.numberOfChannels; ch++) {
-		const data = audioBuffer.getChannelData(ch);
-		for (let i = 0; i < data.length; i++) {
-			data[i] *= scale;
-		}
-	}
-
-	const newPeak = getMaxVolume(audioBuffer);
-	const newRMS = getRMS(audioBuffer);
-	console.log(`After normalization: RMS=${newRMS.toFixed(4)}, peak=${newPeak.toFixed(4)}`);
 }
 
 // --------- Utility Functions ---------
