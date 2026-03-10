@@ -143,7 +143,7 @@ async function generateAudio(options) {
 
 		// LFO starts at the first step frequency; later steps only change it if rampDuration is provided
 		const firstFreq = sequence[0].frequency;
-		const lfo = new Tone.LFO({ frequency: firstFreq, min: 0, max: isochronicVolume, type: "square" }).connect(oscGate.gain);
+		const lfo = new Tone.LFO({ frequency: firstFreq, min: 0, max: isochronicVolume, type: "sine" }).connect(oscGate.gain);
 
 		// Binaural layer (two continuous oscillators, hard-panned L/R)
 		let binauralL, binauralR, panL, panR, binauralGain;
