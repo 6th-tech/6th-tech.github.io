@@ -268,6 +268,21 @@ async function generateAudio(options) {
 		transport.start(0);
 	}, durationSec, alwaysMono ? 1 : channels);
 
+	// Prevent clipping: if peaks exceed 1.0, scale everything down
+	const peak = getMaxVolume(rendered);
+	if (peak > 1.0) {
+		const scale = 0.95 / peak;
+		console.log(`  Output peak ${peak.toFixed(4)} exceeds 1.0, scaling down by ${scale.toFixed(4)}`);
+		for (let ch = 0; ch < rendered.numberOfChannels; ch++) {
+			const data = rendered.getChannelData(ch);
+			for (let i = 0; i < data.length; i++) {
+				data[i] *= scale;
+			}
+		}
+	} else {
+		console.log(`  Output peak ${peak.toFixed(4)}, no scaling needed`);
+	}
+
 	return rendered; // AudioBuffer
 }
 
