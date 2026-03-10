@@ -227,6 +227,10 @@ async function generateAudio(options) {
 		transport.start(0);
 	}, durationSec, alwaysMono ? 1 : channels);
 
+	// Log Tone.js render peak before music mixing
+	const toneOnlyPeak = getMaxVolume(rendered);
+	console.log(`  Tone.js render peak (before music): ${toneOnlyPeak.toFixed(4)}`);
+
 	// Manual music mixing: bypass Tone.Player entirely to avoid unexplained amplification
 	if (decodedNoiseBuffer) {
 		const sampleRate = rendered.sampleRate;
@@ -235,6 +239,8 @@ async function generateAudio(options) {
 		const musicChannels = decodedNoiseBuffer.numberOfChannels;
 		const outChannels = rendered.numberOfChannels;
 		const totalSamples = rendered.length;
+
+		console.log(`  Sample rates - output: ${sampleRate}, music: ${musicSR}`);
 
 		// Compute the same master fade envelope used by Tone.js render
 		const headroom = Math.min(mainVolume, 0.89);
@@ -256,10 +262,12 @@ async function generateAudio(options) {
 			const musicData = decodedNoiseBuffer.getChannelData(musicCh);
 
 			for (let i = 0; i < totalSamples; i++) {
-				// Get music sample (looping, with sample rate conversion)
+				// Get music sample (looping, with linear interpolation for quality)
 				const musicPos = (i * musicSR / sampleRate) % musicLen;
-				const musicIdx = Math.floor(musicPos);
-				const musicSample = musicData[musicIdx] * musicScaleFactor;
+				const idx0 = Math.floor(musicPos);
+				const idx1 = (idx0 + 1) % musicLen;
+				const frac = musicPos - idx0;
+				const musicSample = (musicData[idx0] * (1 - frac) + musicData[idx1] * frac) * musicScaleFactor;
 
 				// Master fade envelope (same as Tone.js render)
 				let masterGain;
