@@ -136,27 +136,26 @@ async function generateAudio(options) {
 		const scaledPeak = musicPeak * scale;
 		console.log(`  Music buffer: RMS=${musicRms.toFixed(4)}, peak=${musicPeak.toFixed(4)}, scale=${scale.toFixed(4)}, scaledPeak=${scaledPeak.toFixed(4)}`);
 
-		// Create a scaled copy with soft limiting for peaks
+		// Create a scaled copy: RMS normalize then compress peaks
 		const ctx = new OfflineAudioContext(decodedNoiseBuffer.numberOfChannels, decodedNoiseBuffer.length, decodedNoiseBuffer.sampleRate);
 		scaledNoiseBuffer = ctx.createBuffer(decodedNoiseBuffer.numberOfChannels, decodedNoiseBuffer.length, decodedNoiseBuffer.sampleRate);
-		const needsSoftLimit = scaledPeak > 0.8;
-		if (needsSoftLimit) {
-			console.log(`  Applying soft limiter (scaled peak ${scaledPeak.toFixed(4)} exceeds 0.8)`);
-		}
 		for (let ch = 0; ch < decodedNoiseBuffer.numberOfChannels; ch++) {
 			const src = decodedNoiseBuffer.getChannelData(ch);
 			const dst = scaledNoiseBuffer.getChannelData(ch);
 			for (let i = 0; i < src.length; i++) {
-				let sample = src[i] * scale;
-				if (needsSoftLimit) {
-					sample = softLimit(sample, 0.9);
-				}
-				dst[i] = sample;
+				dst[i] = src[i] * scale;
 			}
 		}
+
+		// Apply envelope-based compressor to tame peaks without distortion
+		if (scaledPeak > 0.7) {
+			console.log(`  Applying compressor (scaled peak ${scaledPeak.toFixed(4)} exceeds 0.7)`);
+			compressBuffer(scaledNoiseBuffer, 0.5, 4, 0.005, 0.05);
+		}
+
 		const finalRms = getRms(scaledNoiseBuffer);
 		const finalPeak = getMaxVolume(scaledNoiseBuffer);
-		console.log(`  After scaling: RMS=${finalRms.toFixed(4)}, peak=${finalPeak.toFixed(4)}`);
+		console.log(`  After processing: RMS=${finalRms.toFixed(4)}, peak=${finalPeak.toFixed(4)}`);
 	}
 
 	const rendered = await Tone.Offline(({ transport }) => {
@@ -298,17 +297,54 @@ function downloadWav(buffer, fileName) {
 
 // --------- Audio Analysis Functions ---------
 
-// Soft limiter using tanh curve. Below the knee, signal passes through linearly.
-// Above the knee, tanh gradually compresses toward the ceiling with no hard edges.
-function softLimit(sample, ceiling) {
-	const knee = ceiling * 0.7; // linear below this point
-	const abs = Math.abs(sample);
-	if (abs <= knee) return sample;
-	const sign = sample < 0 ? -1 : 1;
-	// Map the excess above knee through tanh, scaled to fill knee→ceiling range
-	const excess = (abs - knee) / (ceiling - knee); // 0→∞ normalized
-	const compressed = knee + (ceiling - knee) * Math.tanh(excess);
-	return sign * compressed;
+// Envelope-based compressor. Adjusts gain smoothly based on signal level,
+// without distorting the waveform shape (no harmonics, no buzzing).
+// threshold: level above which compression starts (linear amplitude)
+// ratio: compression ratio (e.g., 4 means 4:1 compression)
+// attackSec: how fast gain reduction kicks in
+// releaseSec: how fast gain reduction releases
+function compressBuffer(audioBuffer, threshold, ratio, attackSec, releaseSec) {
+	const sampleRate = audioBuffer.sampleRate;
+	const numChannels = audioBuffer.numberOfChannels;
+	const length = audioBuffer.length;
+	const attackCoeff = Math.exp(-1 / (attackSec * sampleRate));
+	const releaseCoeff = Math.exp(-1 / (releaseSec * sampleRate));
+
+	// First pass: compute the gain reduction envelope from all channels
+	const gainReduction = new Float32Array(length);
+	let envelope = 0;
+
+	for (let i = 0; i < length; i++) {
+		// Find max absolute value across all channels at this sample
+		let maxAbs = 0;
+		for (let ch = 0; ch < numChannels; ch++) {
+			const abs = Math.abs(audioBuffer.getChannelData(ch)[i]);
+			if (abs > maxAbs) maxAbs = abs;
+		}
+
+		// Smooth envelope follower
+		if (maxAbs > envelope) {
+			envelope = attackCoeff * envelope + (1 - attackCoeff) * maxAbs;
+		} else {
+			envelope = releaseCoeff * envelope + (1 - releaseCoeff) * maxAbs;
+		}
+
+		// Calculate gain reduction
+		if (envelope > threshold) {
+			const targetLevel = threshold + (envelope - threshold) / ratio;
+			gainReduction[i] = targetLevel / envelope;
+		} else {
+			gainReduction[i] = 1.0;
+		}
+	}
+
+	// Second pass: apply gain reduction to all channels
+	for (let ch = 0; ch < numChannels; ch++) {
+		const data = audioBuffer.getChannelData(ch);
+		for (let i = 0; i < length; i++) {
+			data[i] *= gainReduction[i];
+		}
+	}
 }
 
 function getRms(audioBuffer) {
