@@ -127,16 +127,22 @@ async function generateAudio(options) {
 	const numChannels = alwaysMono ? 1 : (useBinaural ? 2 : (decodedNoiseBuffer && decodedNoiseBuffer.numberOfChannels > 1 ? 2 : 1));
 
 	// Pre-scale custom music buffer using RMS normalization (consistent perceived loudness)
+	// Cap scale factor to prevent extreme amplification that causes artifacts
+	const maxScale = 4;
 	let scaledNoiseBuffer = null;
 	if (decodedNoiseBuffer) {
 		const musicRms = getRms(decodedNoiseBuffer);
 		const musicPeak = getMaxVolume(decodedNoiseBuffer);
 		const targetVolume = customNoiseVolume !== null ? customNoiseVolume : defaultBackgroundVolume;
-		const scale = targetVolume / musicRms;
+		const rmsScale = targetVolume / musicRms;
+		const scale = Math.min(rmsScale, maxScale);
 		const scaledPeak = musicPeak * scale;
+		if (rmsScale > maxScale) {
+			console.log(`  RMS scale ${rmsScale.toFixed(2)}x capped to ${maxScale}x (very dynamic source)`);
+		}
 		console.log(`  Music buffer: RMS=${musicRms.toFixed(4)}, peak=${musicPeak.toFixed(4)}, scale=${scale.toFixed(4)}, scaledPeak=${scaledPeak.toFixed(4)}`);
 
-		// Create a scaled copy: RMS normalize then compress peaks
+		// Create a scaled copy
 		const ctx = new OfflineAudioContext(decodedNoiseBuffer.numberOfChannels, decodedNoiseBuffer.length, decodedNoiseBuffer.sampleRate);
 		scaledNoiseBuffer = ctx.createBuffer(decodedNoiseBuffer.numberOfChannels, decodedNoiseBuffer.length, decodedNoiseBuffer.sampleRate);
 		for (let ch = 0; ch < decodedNoiseBuffer.numberOfChannels; ch++) {
@@ -147,19 +153,11 @@ async function generateAudio(options) {
 			}
 		}
 
-		// Two-stage dynamics processing (standard mastering chain):
-		// Stage 1: Compressor — gently reduces dynamic range
-		// Stage 2: True look-ahead limiter — guarantees peak ceiling
-		if (scaledPeak > 0.7) {
-			console.log(`  Stage 1 compressor (scaled peak ${scaledPeak.toFixed(4)} exceeds 0.7)`);
-			compressBuffer(scaledNoiseBuffer, 0.5, 4, 0.001, 0.05, 0.005);
-			const midPeak = getMaxVolume(scaledNoiseBuffer);
-			console.log(`  After compressor: peak=${midPeak.toFixed(4)}`);
-
-			if (midPeak > 0.85) {
-				console.log(`  Stage 2 limiter (peak ${midPeak.toFixed(4)} exceeds 0.85)`);
-				truePeakLimiter(scaledNoiseBuffer, 0.85, 0.005);
-			}
+		// True peak limiter: only touches actual peaks above ceiling,
+		// leaves the rest of the signal completely untouched (no artifacts)
+		if (scaledPeak > 0.85) {
+			console.log(`  Applying limiter (scaled peak ${scaledPeak.toFixed(4)} exceeds 0.85)`);
+			truePeakLimiter(scaledNoiseBuffer, 0.85, 0.005);
 		}
 
 		// Safety ceiling: guarantee peak ≤ 0.95 before entering Tone.js
@@ -382,71 +380,6 @@ function truePeakLimiter(audioBuffer, ceiling, lookAheadSec) {
 		const data = audioBuffer.getChannelData(ch);
 		for (let i = 0; i < length; i++) {
 			data[i] *= lookaheadGain[i];
-		}
-	}
-}
-
-// Look-ahead envelope compressor. Adjusts gain smoothly based on signal level,
-// without distorting the waveform shape (no harmonics, no buzzing).
-// The look-ahead ensures gain reduction starts BEFORE transients arrive.
-// threshold: level above which compression starts (linear amplitude)
-// ratio: compression ratio (e.g., 6 means 6:1 compression)
-// attackSec: how fast gain reduction kicks in (1ms recommended)
-// releaseSec: how fast gain reduction releases (50ms recommended)
-// lookAheadSec: how far ahead to look for upcoming transients (5ms recommended)
-function compressBuffer(audioBuffer, threshold, ratio, attackSec, releaseSec, lookAheadSec) {
-	const sampleRate = audioBuffer.sampleRate;
-	const numChannels = audioBuffer.numberOfChannels;
-	const length = audioBuffer.length;
-	const attackCoeff = Math.exp(-1 / (attackSec * sampleRate));
-	const releaseCoeff = Math.exp(-1 / (releaseSec * sampleRate));
-	const lookAheadSamples = Math.max(1, Math.round(lookAheadSec * sampleRate));
-
-	// Pass 1 (forward): compute gain reduction with envelope follower
-	const gainReduction = new Float32Array(length);
-	let envelope = 0;
-
-	for (let i = 0; i < length; i++) {
-		// Find max absolute value across all channels at this sample
-		let maxAbs = 0;
-		for (let ch = 0; ch < numChannels; ch++) {
-			const abs = Math.abs(audioBuffer.getChannelData(ch)[i]);
-			if (abs > maxAbs) maxAbs = abs;
-		}
-
-		// Smooth envelope follower
-		if (maxAbs > envelope) {
-			envelope = attackCoeff * envelope + (1 - attackCoeff) * maxAbs;
-		} else {
-			envelope = releaseCoeff * envelope + (1 - releaseCoeff) * maxAbs;
-		}
-
-		// Calculate gain reduction
-		if (envelope > threshold) {
-			const targetLevel = threshold + (envelope - threshold) / ratio;
-			gainReduction[i] = targetLevel / envelope;
-		} else {
-			gainReduction[i] = 1.0;
-		}
-	}
-
-	// Pass 2 (backward): look-ahead — propagate gain reduction backward so it
-	// starts before the transient arrives. Uses exponential decay so the
-	// look-ahead doesn't extend indefinitely.
-	const decay = 1 / lookAheadSamples;
-	let minGain = 1.0;
-	for (let i = length - 1; i >= 0; i--) {
-		minGain = Math.min(gainReduction[i], minGain);
-		gainReduction[i] = minGain;
-		// Decay toward 1.0 over ~lookAheadSamples distance
-		minGain += (1.0 - minGain) * decay;
-	}
-
-	// Pass 3: apply gain reduction to all channels
-	for (let ch = 0; ch < numChannels; ch++) {
-		const data = audioBuffer.getChannelData(ch);
-		for (let i = 0; i < length; i++) {
-			data[i] *= gainReduction[i];
 		}
 	}
 }
