@@ -147,10 +147,10 @@ async function generateAudio(options) {
 			}
 		}
 
-		// Apply envelope-based compressor to tame peaks without distortion
+		// Apply look-ahead compressor to tame peaks without distortion
 		if (scaledPeak > 0.7) {
 			console.log(`  Applying compressor (scaled peak ${scaledPeak.toFixed(4)} exceeds 0.7)`);
-			compressBuffer(scaledNoiseBuffer, 0.5, 4, 0.005, 0.05);
+			compressBuffer(scaledNoiseBuffer, 0.5, 6, 0.001, 0.05, 0.005);
 		}
 
 		const finalRms = getRms(scaledNoiseBuffer);
@@ -297,20 +297,23 @@ function downloadWav(buffer, fileName) {
 
 // --------- Audio Analysis Functions ---------
 
-// Envelope-based compressor. Adjusts gain smoothly based on signal level,
+// Look-ahead envelope compressor. Adjusts gain smoothly based on signal level,
 // without distorting the waveform shape (no harmonics, no buzzing).
+// The look-ahead ensures gain reduction starts BEFORE transients arrive.
 // threshold: level above which compression starts (linear amplitude)
-// ratio: compression ratio (e.g., 4 means 4:1 compression)
-// attackSec: how fast gain reduction kicks in
-// releaseSec: how fast gain reduction releases
-function compressBuffer(audioBuffer, threshold, ratio, attackSec, releaseSec) {
+// ratio: compression ratio (e.g., 6 means 6:1 compression)
+// attackSec: how fast gain reduction kicks in (1ms recommended)
+// releaseSec: how fast gain reduction releases (50ms recommended)
+// lookAheadSec: how far ahead to look for upcoming transients (5ms recommended)
+function compressBuffer(audioBuffer, threshold, ratio, attackSec, releaseSec, lookAheadSec) {
 	const sampleRate = audioBuffer.sampleRate;
 	const numChannels = audioBuffer.numberOfChannels;
 	const length = audioBuffer.length;
 	const attackCoeff = Math.exp(-1 / (attackSec * sampleRate));
 	const releaseCoeff = Math.exp(-1 / (releaseSec * sampleRate));
+	const lookAheadSamples = Math.max(1, Math.round(lookAheadSec * sampleRate));
 
-	// First pass: compute the gain reduction envelope from all channels
+	// Pass 1 (forward): compute gain reduction with envelope follower
 	const gainReduction = new Float32Array(length);
 	let envelope = 0;
 
@@ -338,7 +341,19 @@ function compressBuffer(audioBuffer, threshold, ratio, attackSec, releaseSec) {
 		}
 	}
 
-	// Second pass: apply gain reduction to all channels
+	// Pass 2 (backward): look-ahead — propagate gain reduction backward so it
+	// starts before the transient arrives. Uses exponential decay so the
+	// look-ahead doesn't extend indefinitely.
+	const decay = 1 / lookAheadSamples;
+	let minGain = 1.0;
+	for (let i = length - 1; i >= 0; i--) {
+		minGain = Math.min(gainReduction[i], minGain);
+		gainReduction[i] = minGain;
+		// Decay toward 1.0 over ~lookAheadSamples distance
+		minGain += (1.0 - minGain) * decay;
+	}
+
+	// Pass 3: apply gain reduction to all channels
 	for (let ch = 0; ch < numChannels; ch++) {
 		const data = audioBuffer.getChannelData(ch);
 		for (let i = 0; i < length; i++) {
