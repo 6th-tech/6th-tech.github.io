@@ -147,10 +147,19 @@ async function generateAudio(options) {
 			}
 		}
 
-		// Apply look-ahead compressor to tame peaks without distortion
+		// Two-stage dynamics processing (standard mastering chain):
+		// Stage 1: Compressor — gently reduces dynamic range
+		// Stage 2: Limiter — catches any remaining peaks, ensures nothing exceeds ~0.9
 		if (scaledPeak > 0.7) {
-			console.log(`  Applying compressor (scaled peak ${scaledPeak.toFixed(4)} exceeds 0.7)`);
-			compressBuffer(scaledNoiseBuffer, 0.5, 6, 0.001, 0.05, 0.005);
+			console.log(`  Stage 1 compressor (scaled peak ${scaledPeak.toFixed(4)} exceeds 0.7)`);
+			compressBuffer(scaledNoiseBuffer, 0.5, 4, 0.001, 0.05, 0.005);
+			const midPeak = getMaxVolume(scaledNoiseBuffer);
+			console.log(`  After compressor: peak=${midPeak.toFixed(4)}`);
+
+			if (midPeak > 0.85) {
+				console.log(`  Stage 2 limiter (peak ${midPeak.toFixed(4)} exceeds 0.85)`);
+				compressBuffer(scaledNoiseBuffer, 0.85, 20, 0.0005, 0.02, 0.005);
+			}
 		}
 
 		const finalRms = getRms(scaledNoiseBuffer);
