@@ -126,23 +126,32 @@ async function generateAudio(options) {
 	// Choose channel count dynamically
 	const numChannels = alwaysMono ? 1 : (useBinaural ? 2 : (decodedNoiseBuffer && decodedNoiseBuffer.numberOfChannels > 1 ? 2 : 1));
 
-	// Pre-scale custom music buffer to target volume
+	// Pre-scale custom music buffer using RMS normalization (consistent perceived loudness)
 	let scaledNoiseBuffer = null;
 	if (decodedNoiseBuffer) {
+		const musicRms = getRms(decodedNoiseBuffer);
 		const musicPeak = getMaxVolume(decodedNoiseBuffer);
 		const targetVolume = customNoiseVolume !== null ? customNoiseVolume : defaultBackgroundVolume;
-		const scale = targetVolume / musicPeak;
-		console.log(`  Music buffer: peak=${musicPeak.toFixed(4)}, scale=${scale.toFixed(4)}`);
+		const scale = targetVolume / musicRms;
+		const peakLimit = 0.9; // clamp peaks after RMS scaling to prevent clipping
+		console.log(`  Music buffer: RMS=${musicRms.toFixed(4)}, peak=${musicPeak.toFixed(4)}, scale=${scale.toFixed(4)}`);
 
-		// Create a scaled copy
+		// Create a scaled copy with peak clamping
 		const ctx = new OfflineAudioContext(decodedNoiseBuffer.numberOfChannels, decodedNoiseBuffer.length, decodedNoiseBuffer.sampleRate);
 		scaledNoiseBuffer = ctx.createBuffer(decodedNoiseBuffer.numberOfChannels, decodedNoiseBuffer.length, decodedNoiseBuffer.sampleRate);
+		let clampedSamples = 0;
 		for (let ch = 0; ch < decodedNoiseBuffer.numberOfChannels; ch++) {
 			const src = decodedNoiseBuffer.getChannelData(ch);
 			const dst = scaledNoiseBuffer.getChannelData(ch);
 			for (let i = 0; i < src.length; i++) {
-				dst[i] = src[i] * scale;
+				let sample = src[i] * scale;
+				if (sample > peakLimit) { sample = peakLimit; clampedSamples++; }
+				else if (sample < -peakLimit) { sample = -peakLimit; clampedSamples++; }
+				dst[i] = sample;
 			}
+		}
+		if (clampedSamples > 0) {
+			console.log(`  Peak clamping: ${clampedSamples} samples clamped to ±${peakLimit}`);
 		}
 	}
 
@@ -284,6 +293,20 @@ function downloadWav(buffer, fileName) {
 }
 
 // --------- Audio Analysis Functions ---------
+function getRms(audioBuffer) {
+	if (!audioBuffer) return 0;
+	let sumSquares = 0;
+	let totalSamples = 0;
+	for (let ch = 0; ch < audioBuffer.numberOfChannels; ch++) {
+		const data = audioBuffer.getChannelData(ch);
+		for (let i = 0; i < data.length; i++) {
+			sumSquares += data[i] * data[i];
+		}
+		totalSamples += data.length;
+	}
+	return Math.sqrt(sumSquares / totalSamples);
+}
+
 function getMaxVolume(audioBuffer, logDetails) {
 	if (!audioBuffer) return 0;
 
