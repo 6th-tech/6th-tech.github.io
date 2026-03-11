@@ -282,6 +282,26 @@ function generateWithCustomMusic(options, durationSec, numChannels) {
 
 	// Log output stats
 	const peak = getMaxVolume(outputBuffer, true);
+	// Verify: check if any non-music content exists by comparing channels
+	let nonZeroIso = 0;
+	let nonZeroBin = 0;
+	const verifyData = outChannels[0];
+	for (let i = 0; i < Math.min(totalSamples, 441000); i++) { // check first 10 seconds
+		const musicPos = (i * musicSR / sampleRate) % musicLen;
+		const idx0v = Math.floor(musicPos);
+		const idx1v = (idx0v + 1) % musicLen;
+		const fracv = musicPos - idx0v;
+		const t = i / sampleRate;
+		let mg;
+		if (t < fadeInEnd) mg = headroom * (t / fadeInEnd);
+		else if (t >= fadeOutStart && t < fadeOutEnd) mg = headroom * (1 - (t - fadeOutStart) / (fadeOutEnd - fadeOutStart));
+		else if (t >= fadeOutEnd) mg = 0;
+		else mg = headroom;
+		const expectedMusic = (musicDataChannels[0][idx0v] * (1 - fracv) + musicDataChannels[0][idx1v] * fracv) * musicScale * mg;
+		const diff = Math.abs(verifyData[i] - expectedMusic);
+		if (diff > 0.0001) nonZeroIso++;
+	}
+	console.log(`  VERIFY: ${nonZeroIso} samples differ from music-only (first 10s of ch0)`);
 	console.log(`  Output peak ${peak.toFixed(4)}, no Tone.js involved`);
 
 	return outputBuffer;
