@@ -149,7 +149,7 @@ async function generateAudio(options) {
 
 		// Two-stage dynamics processing (standard mastering chain):
 		// Stage 1: Compressor — gently reduces dynamic range
-		// Stage 2: Limiter — catches any remaining peaks, ensures nothing exceeds ~0.9
+		// Stage 2: True look-ahead limiter — guarantees peak ceiling
 		if (scaledPeak > 0.7) {
 			console.log(`  Stage 1 compressor (scaled peak ${scaledPeak.toFixed(4)} exceeds 0.7)`);
 			compressBuffer(scaledNoiseBuffer, 0.5, 4, 0.001, 0.05, 0.005);
@@ -158,7 +158,30 @@ async function generateAudio(options) {
 
 			if (midPeak > 0.85) {
 				console.log(`  Stage 2 limiter (peak ${midPeak.toFixed(4)} exceeds 0.85)`);
-				compressBuffer(scaledNoiseBuffer, 0.85, 20, 0.0005, 0.02, 0.005);
+				truePeakLimiter(scaledNoiseBuffer, 0.85, 0.005);
+			}
+		}
+
+		// Safety ceiling: guarantee peak ≤ 0.95 before entering Tone.js
+		const prePeak = getMaxVolume(scaledNoiseBuffer);
+		if (prePeak > 0.95) {
+			const safeScale = 0.95 / prePeak;
+			console.log(`  Safety ceiling: scaling by ${safeScale.toFixed(4)} (peak was ${prePeak.toFixed(4)})`);
+			for (let ch = 0; ch < scaledNoiseBuffer.numberOfChannels; ch++) {
+				const data = scaledNoiseBuffer.getChannelData(ch);
+				for (let i = 0; i < data.length; i++) data[i] *= safeScale;
+			}
+		}
+
+		// Apply fade at buffer boundaries for click-free looping
+		const loopFadeSamples = Math.round(noiseFade * scaledNoiseBuffer.sampleRate);
+		for (let ch = 0; ch < scaledNoiseBuffer.numberOfChannels; ch++) {
+			const data = scaledNoiseBuffer.getChannelData(ch);
+			const len = data.length;
+			for (let i = 0; i < loopFadeSamples && i < len; i++) {
+				const gain = i / loopFadeSamples;
+				data[i] *= gain;              // fade in at start
+				data[len - 1 - i] *= gain;    // fade out at end
 			}
 		}
 
@@ -209,10 +232,8 @@ async function generateAudio(options) {
 			const player = new Tone.Player(toneBuffer).connect(master);
 			player.loop = true;
 			player.volume.value = 0; // 0 dB = unity gain (volume already pre-scaled)
-			if (useNoiseFade) {
-				player.fadeIn = noiseFade;
-				player.fadeOut = noiseFade;
-			}
+			// Note: loop fading is baked into the buffer itself (not player.fadeIn/fadeOut
+			// which only apply at start/stop, not at loop boundaries)
 			player.start(0);
 		} else {
 			// Built-in noise
@@ -305,6 +326,65 @@ function downloadWav(buffer, fileName) {
 }
 
 // --------- Audio Analysis Functions ---------
+
+// True peak limiter: computes gain from ACTUAL sample levels (not smoothed envelope),
+// so no peak can escape. Uses sliding window minimum for look-ahead and
+// attack/release smoothing to avoid clicks.
+// ceiling: maximum allowed amplitude (e.g., 0.85)
+// lookAheadSec: look-ahead window (5ms recommended)
+function truePeakLimiter(audioBuffer, ceiling, lookAheadSec) {
+	const sampleRate = audioBuffer.sampleRate;
+	const numChannels = audioBuffer.numberOfChannels;
+	const length = audioBuffer.length;
+	const lookAheadSamples = Math.max(1, Math.round(lookAheadSec * sampleRate));
+	const releaseCoeff = Math.exp(-1 / (0.05 * sampleRate)); // 50ms release
+
+	// Pass 1: compute instantaneous gain needed at each sample
+	const gainNeeded = new Float32Array(length);
+	for (let i = 0; i < length; i++) {
+		let maxAbs = 0;
+		for (let ch = 0; ch < numChannels; ch++) {
+			const abs = Math.abs(audioBuffer.getChannelData(ch)[i]);
+			if (abs > maxAbs) maxAbs = abs;
+		}
+		gainNeeded[i] = maxAbs > ceiling ? ceiling / maxAbs : 1.0;
+	}
+
+	// Pass 2: sliding window minimum (look-ahead) using monotonic deque, O(n)
+	// For each sample i, find the minimum gain in [i, i+lookAheadSamples)
+	const lookaheadGain = new Float32Array(length);
+	const deque = []; // indices with monotonically increasing gain values
+	let dqStart = 0;
+	for (let i = length - 1; i >= 0; i--) {
+		// Remove indices outside window
+		while (dqStart < deque.length && deque[dqStart] >= i + lookAheadSamples) {
+			dqStart++;
+		}
+		// Remove from back any indices with gain >= current
+		while (deque.length > dqStart && gainNeeded[deque[deque.length - 1]] >= gainNeeded[i]) {
+			deque.pop();
+		}
+		deque.push(i);
+		lookaheadGain[i] = gainNeeded[deque[dqStart]];
+	}
+
+	// Pass 3: smooth the gain curve with release to avoid clicks
+	// (attack is instant since look-ahead already pre-reduces)
+	for (let i = 1; i < length; i++) {
+		if (lookaheadGain[i] > lookaheadGain[i - 1]) {
+			// Release: smooth upward transition
+			lookaheadGain[i] = releaseCoeff * lookaheadGain[i - 1] + (1 - releaseCoeff) * lookaheadGain[i];
+		}
+	}
+
+	// Pass 4: apply gain to all channels
+	for (let ch = 0; ch < numChannels; ch++) {
+		const data = audioBuffer.getChannelData(ch);
+		for (let i = 0; i < length; i++) {
+			data[i] *= lookaheadGain[i];
+		}
+	}
+}
 
 // Look-ahead envelope compressor. Adjusts gain smoothly based on signal level,
 // without distorting the waveform shape (no harmonics, no buzzing).
