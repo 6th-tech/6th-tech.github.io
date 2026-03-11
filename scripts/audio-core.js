@@ -188,6 +188,9 @@ async function generateAudio(options) {
 		console.log(`  After processing: RMS=${finalRms.toFixed(4)}, peak=${finalPeak.toFixed(4)}`);
 	}
 
+	// Tone.js renders ONLY isochronic tones, binaural beats, and built-in noise.
+	// Custom music is mixed in afterward with simple math — no Tone.Player,
+	// no Tone.Buffer conversion, no black-box behavior.
 	const rendered = await Tone.Offline(({ transport }) => {
 		// Carrier gated by LFO -> master
 		const oscGate = new Tone.Gain(0);
@@ -219,22 +222,8 @@ async function generateAudio(options) {
 			oscGate.connect(master);
 		}
 
-		// Background sound
-		if (scaledNoiseBuffer) {
-			// Custom music via Tone.Player (pre-scaled buffer)
-			const toneBuffer = new Tone.Buffer().fromArray(
-				scaledNoiseBuffer.numberOfChannels === 1
-					? scaledNoiseBuffer.getChannelData(0)
-					: [scaledNoiseBuffer.getChannelData(0), scaledNoiseBuffer.getChannelData(1)]
-			);
-			const player = new Tone.Player(toneBuffer).connect(master);
-			player.loop = true;
-			player.volume.value = 0; // 0 dB = unity gain (volume already pre-scaled)
-			// Note: loop fading is baked into the buffer itself (not player.fadeIn/fadeOut
-			// which only apply at start/stop, not at loop boundaries)
-			player.start(0);
-		} else {
-			// Built-in noise
+		// Built-in noise (only for noise sessions, NOT custom music)
+		if (!scaledNoiseBuffer) {
 			const noiseGain = new Tone.Gain(defaultBackgroundVolume);
 			let filter = null;
 			if (useNoiseModulation) {
@@ -289,6 +278,55 @@ async function generateAudio(options) {
 
 		transport.start(0);
 	}, durationSec, alwaysMono ? 1 : numChannels);
+
+	// Mix custom music directly into the rendered output (bypasses Tone.js entirely)
+	if (scaledNoiseBuffer) {
+		const headroom = Math.min(mainVolume, 0.89);
+		const fadeInEnd = Math.min(fadeIn, durationSec);
+		const fadeOutStart = Math.max(0, durationSec - Math.max(0, fadeOut + finalBuffer));
+		const fadeOutEnd = Math.min(durationSec, fadeOutStart + fadeOut);
+		const outSR = rendered.sampleRate;
+		const musicSR = scaledNoiseBuffer.sampleRate;
+		const musicLen = scaledNoiseBuffer.length;
+		const musicChannels = scaledNoiseBuffer.numberOfChannels;
+
+		// Get channel data references
+		const musicData = [];
+		for (let ch = 0; ch < musicChannels; ch++) {
+			musicData.push(scaledNoiseBuffer.getChannelData(ch));
+		}
+
+		for (let ch = 0; ch < rendered.numberOfChannels; ch++) {
+			const outData = rendered.getChannelData(ch);
+			const srcCh = ch < musicChannels ? ch : 0; // mono music → both channels
+
+			for (let i = 0; i < rendered.length; i++) {
+				const t = i / outSR;
+
+				// Master fade envelope (same as Tone.js master gain)
+				let masterGain;
+				if (t < fadeInEnd) {
+					masterGain = headroom * (t / fadeInEnd);
+				} else if (t >= fadeOutStart && t < fadeOutEnd) {
+					masterGain = headroom * (1 - (t - fadeOutStart) / (fadeOutEnd - fadeOutStart));
+				} else if (t >= fadeOutEnd) {
+					masterGain = 0;
+				} else {
+					masterGain = headroom;
+				}
+
+				// Music sample with linear interpolation (handles sample rate conversion)
+				const musicPos = (i * musicSR / outSR) % musicLen;
+				const idx0 = Math.floor(musicPos);
+				const idx1 = (idx0 + 1) % musicLen;
+				const frac = musicPos - idx0;
+				const musicSample = musicData[srcCh][idx0] * (1 - frac) + musicData[srcCh][idx1] * frac;
+
+				outData[i] += musicSample * masterGain;
+			}
+		}
+		console.log(`  Music mixed directly (bypassed Tone.js Player)`);
+	}
 
 	// Post-render: normalize to 0.95 peak if clipping
 	const peak = getMaxVolume(rendered, true);
