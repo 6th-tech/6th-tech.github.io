@@ -157,7 +157,7 @@ async function generateAudio(options) {
 		// leaves the rest of the signal completely untouched (no artifacts)
 		if (scaledPeak > 0.85) {
 			console.log(`  Applying limiter (scaled peak ${scaledPeak.toFixed(4)} exceeds 0.85)`);
-			truePeakLimiter(scaledNoiseBuffer, 0.85, 0.005);
+			truePeakLimiter(scaledNoiseBuffer, 0.85, 0.01);
 		}
 
 		// Safety ceiling: guarantee peak ≤ 0.95 before entering Tone.js
@@ -329,13 +329,14 @@ function downloadWav(buffer, fileName) {
 // so no peak can escape. Uses sliding window minimum for look-ahead and
 // attack/release smoothing to avoid clicks.
 // ceiling: maximum allowed amplitude (e.g., 0.85)
-// lookAheadSec: look-ahead window (5ms recommended)
+// lookAheadSec: look-ahead window (10ms — must be longer than attack for clean limiting)
 function truePeakLimiter(audioBuffer, ceiling, lookAheadSec) {
 	const sampleRate = audioBuffer.sampleRate;
 	const numChannels = audioBuffer.numberOfChannels;
 	const length = audioBuffer.length;
 	const lookAheadSamples = Math.max(1, Math.round(lookAheadSec * sampleRate));
-	const releaseCoeff = Math.exp(-1 / (0.05 * sampleRate)); // 50ms release
+	const attackCoeff = Math.exp(-1 / (0.002 * sampleRate));  // 2ms attack
+	const releaseCoeff = Math.exp(-1 / (0.05 * sampleRate));  // 50ms release
 
 	// Pass 1: compute instantaneous gain needed at each sample
 	const gainNeeded = new Float32Array(length);
@@ -366,11 +367,15 @@ function truePeakLimiter(audioBuffer, ceiling, lookAheadSec) {
 		lookaheadGain[i] = gainNeeded[deque[dqStart]];
 	}
 
-	// Pass 3: smooth the gain curve with release to avoid clicks
-	// (attack is instant since look-ahead already pre-reduces)
+	// Pass 3: smooth the gain curve with attack AND release to avoid clicks
+	// Attack smoothing prevents the hard edge at the look-ahead boundary
+	// (without this, gain drops from 1.0 to 0.2 in one sample = click)
 	for (let i = 1; i < length; i++) {
-		if (lookaheadGain[i] > lookaheadGain[i - 1]) {
-			// Release: smooth upward transition
+		if (lookaheadGain[i] < lookaheadGain[i - 1]) {
+			// Attack: smooth downward transition (2ms)
+			lookaheadGain[i] = attackCoeff * lookaheadGain[i - 1] + (1 - attackCoeff) * lookaheadGain[i];
+		} else if (lookaheadGain[i] > lookaheadGain[i - 1]) {
+			// Release: smooth upward transition (50ms)
 			lookaheadGain[i] = releaseCoeff * lookaheadGain[i - 1] + (1 - releaseCoeff) * lookaheadGain[i];
 		}
 	}
