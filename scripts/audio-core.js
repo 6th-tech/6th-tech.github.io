@@ -141,6 +141,8 @@ async function generateAudio(options) {
 			console.log(`  RMS scale ${rmsScale.toFixed(2)}x capped to ${maxScale}x (very dynamic source)`);
 		}
 		console.log(`  Music buffer: RMS=${musicRms.toFixed(4)}, peak=${musicPeak.toFixed(4)}, scale=${scale.toFixed(4)}, scaledPeak=${scaledPeak.toFixed(4)}`);
+		const active = getActiveRms(decodedNoiseBuffer);
+		console.log(`  Active RMS=${active.rms.toFixed(4)} (${active.activePct.toFixed(1)}% active), silence gap ratio: ${(100 - active.activePct).toFixed(1)}%`);
 
 		// Create a scaled copy
 		const ctx = new OfflineAudioContext(decodedNoiseBuffer.numberOfChannels, decodedNoiseBuffer.length, decodedNoiseBuffer.sampleRate);
@@ -439,6 +441,29 @@ function getRms(audioBuffer) {
 		totalSamples += data.length;
 	}
 	return Math.sqrt(sumSquares / totalSamples);
+}
+
+// Active RMS: only measures samples above a silence threshold,
+// ignoring gaps between sounds (birds, waves, chimes, etc.)
+function getActiveRms(audioBuffer, silenceThreshold) {
+	if (!audioBuffer) return { rms: 0, activePct: 0 };
+	const thresh = silenceThreshold || 0.01;
+	let sumSquares = 0;
+	let activeSamples = 0;
+	let totalSamples = 0;
+	for (let ch = 0; ch < audioBuffer.numberOfChannels; ch++) {
+		const data = audioBuffer.getChannelData(ch);
+		for (let i = 0; i < data.length; i++) {
+			totalSamples++;
+			if (Math.abs(data[i]) > thresh) {
+				sumSquares += data[i] * data[i];
+				activeSamples++;
+			}
+		}
+	}
+	const rms = activeSamples > 0 ? Math.sqrt(sumSquares / activeSamples) : 0;
+	const activePct = (activeSamples / totalSamples) * 100;
+	return { rms, activePct };
 }
 
 function getMaxVolume(audioBuffer, logDetails) {
