@@ -186,25 +186,6 @@ function generateWithCustomMusic(options, durationSec, numChannels) {
 		musicDataChannels.push(decodedNoiseBuffer.getChannelData(musicCh));
 	}
 
-	// Notch filter to remove music energy at the carrier frequency (prevents beating/crackling)
-	// 2nd-order IIR notch filter: H(z) = (1 - 2cos(w0)z^-1 + z^-2) / (1 - 2r*cos(w0)z^-1 + r^2*z^-2)
-	const notchBW = 30; // Hz bandwidth of the notch
-	const w0 = 2 * Math.PI * carrierFreq / sampleRate;
-	const cosW0 = Math.cos(w0);
-	const r = 1 - (notchBW * Math.PI / sampleRate);
-	const r2 = r * r;
-	const a1 = -2 * r * cosW0;
-	const a2 = r2;
-	const b0 = 1;
-	const b1 = -2 * cosW0;
-	const b2 = 1;
-	// Per-channel filter state
-	const filterState = [];
-	for (let ch = 0; ch < numChannels; ch++) {
-		filterState.push({ x1: 0, x2: 0, y1: 0, y2: 0 });
-	}
-	console.log(`  Notch filter: ${carrierFreq}Hz, BW=${notchBW}Hz, r=${r.toFixed(4)}`);
-
 	// Phase accumulators
 	let carrierPhase = 0;
 	let lfoPhase = 0;
@@ -293,18 +274,9 @@ function generateWithCustomMusic(options, durationSec, numChannels) {
 
 		// --- Write to each channel ---
 		for (let ch = 0; ch < numChannels; ch++) {
-			const rawMusic = (musicDataChannels[ch][idx0] * (1 - frac) + musicDataChannels[ch][idx1] * frac) * musicScale * nfGain;
-
-			// Apply notch filter to remove carrier frequency from music
-			const fs = filterState[ch];
-			const filtered = b0 * rawMusic + b1 * fs.x1 + b2 * fs.x2 - a1 * fs.y1 - a2 * fs.y2;
-			fs.x2 = fs.x1;
-			fs.x1 = rawMusic;
-			fs.y2 = fs.y1;
-			fs.y1 = filtered;
-
+			const musicSample = (musicDataChannels[ch][idx0] * (1 - frac) + musicDataChannels[ch][idx1] * frac) * musicScale * nfGain;
 			const binSample = (ch === 0) ? binauralL : binauralR;
-			outChannels[ch][i] = (isochronicSample + filtered) * masterGain + binSample;
+			outChannels[ch][i] = (isochronicSample + musicSample) * masterGain + binSample;
 		}
 	}
 
