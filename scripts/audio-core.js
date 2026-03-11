@@ -133,26 +133,30 @@ async function generateAudio(options) {
 		const musicPeak = getMaxVolume(decodedNoiseBuffer);
 		const targetVolume = customNoiseVolume !== null ? customNoiseVolume : defaultBackgroundVolume;
 		const scale = targetVolume / musicRms;
-		const peakLimit = 0.9; // clamp peaks after RMS scaling to prevent clipping
-		console.log(`  Music buffer: RMS=${musicRms.toFixed(4)}, peak=${musicPeak.toFixed(4)}, scale=${scale.toFixed(4)}`);
+		const scaledPeak = musicPeak * scale;
+		console.log(`  Music buffer: RMS=${musicRms.toFixed(4)}, peak=${musicPeak.toFixed(4)}, scale=${scale.toFixed(4)}, scaledPeak=${scaledPeak.toFixed(4)}`);
 
-		// Create a scaled copy with peak clamping
+		// Create a scaled copy with soft limiting for peaks
 		const ctx = new OfflineAudioContext(decodedNoiseBuffer.numberOfChannels, decodedNoiseBuffer.length, decodedNoiseBuffer.sampleRate);
 		scaledNoiseBuffer = ctx.createBuffer(decodedNoiseBuffer.numberOfChannels, decodedNoiseBuffer.length, decodedNoiseBuffer.sampleRate);
-		let clampedSamples = 0;
+		const needsSoftLimit = scaledPeak > 0.8;
+		if (needsSoftLimit) {
+			console.log(`  Applying soft limiter (scaled peak ${scaledPeak.toFixed(4)} exceeds 0.8)`);
+		}
 		for (let ch = 0; ch < decodedNoiseBuffer.numberOfChannels; ch++) {
 			const src = decodedNoiseBuffer.getChannelData(ch);
 			const dst = scaledNoiseBuffer.getChannelData(ch);
 			for (let i = 0; i < src.length; i++) {
 				let sample = src[i] * scale;
-				if (sample > peakLimit) { sample = peakLimit; clampedSamples++; }
-				else if (sample < -peakLimit) { sample = -peakLimit; clampedSamples++; }
+				if (needsSoftLimit) {
+					sample = softLimit(sample, 0.9);
+				}
 				dst[i] = sample;
 			}
 		}
-		if (clampedSamples > 0) {
-			console.log(`  Peak clamping: ${clampedSamples} samples clamped to ±${peakLimit}`);
-		}
+		const finalRms = getRms(scaledNoiseBuffer);
+		const finalPeak = getMaxVolume(scaledNoiseBuffer);
+		console.log(`  After scaling: RMS=${finalRms.toFixed(4)}, peak=${finalPeak.toFixed(4)}`);
 	}
 
 	const rendered = await Tone.Offline(({ transport }) => {
@@ -293,6 +297,20 @@ function downloadWav(buffer, fileName) {
 }
 
 // --------- Audio Analysis Functions ---------
+
+// Soft limiter using tanh curve. Below the knee, signal passes through linearly.
+// Above the knee, tanh gradually compresses toward the ceiling with no hard edges.
+function softLimit(sample, ceiling) {
+	const knee = ceiling * 0.7; // linear below this point
+	const abs = Math.abs(sample);
+	if (abs <= knee) return sample;
+	const sign = sample < 0 ? -1 : 1;
+	// Map the excess above knee through tanh, scaled to fill knee→ceiling range
+	const excess = (abs - knee) / (ceiling - knee); // 0→∞ normalized
+	const compressed = knee + (ceiling - knee) * Math.tanh(excess);
+	return sign * compressed;
+}
+
 function getRms(audioBuffer) {
 	if (!audioBuffer) return 0;
 	let sumSquares = 0;
