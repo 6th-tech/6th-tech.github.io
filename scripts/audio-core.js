@@ -271,10 +271,10 @@ async function generateAudio(options) {
 		let currentTime = 0;
 		sequence.forEach(step => {
 			if (step.rampDuration) {
-				transport.schedule(() => {
-					lfo.frequency.linearRampTo(step.frequency, step.rampDuration);
+				transport.schedule((time) => {
+					lfo.frequency.linearRampTo(step.frequency, step.rampDuration, time);
 					if (binauralR) {
-						binauralR.frequency.linearRampTo(carrierFreq + step.frequency, step.rampDuration);
+						binauralR.frequency.linearRampTo(carrierFreq + step.frequency, step.rampDuration, time);
 					}
 				}, currentTime);
 			}
