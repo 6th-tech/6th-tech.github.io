@@ -8,6 +8,7 @@ const fadeOut = 10; // sec
 const noiseFade = 3; // sec
 const finalBuffer = 3; // sec
 const defaultBackgroundVolume = 0.5;
+const defaultNoiseVolume = 0.7;
 
 // --------- Parsing Functions ---------
 function parseSequence(sequenceText) {
@@ -244,7 +245,7 @@ async function generateAudio(options) {
 
 		// Built-in noise (only for noise sessions, NOT custom music)
 		if (!scaledNoiseBuffer) {
-			const noiseGain = new Tone.Gain(defaultBackgroundVolume);
+			const noiseGain = new Tone.Gain(defaultNoiseVolume);
 			let filter = null;
 			if (useNoiseModulation) {
 				filter = new Tone.AutoFilter({

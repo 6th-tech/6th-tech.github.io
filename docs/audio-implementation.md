@@ -63,7 +63,7 @@ Tone.js Offline renders everything:
 |-----------|-------|-------|
 | Isochronic tones | 0.35–0.455 | LFO max; boosted up to 30% for loud backgrounds |
 | Binaural beats | 0.12 | Per-channel, stereo panned L/R |
-| Background noise | 0.50 | `defaultBackgroundVolume` |
+| Background noise | 0.70 | `defaultNoiseVolume` — higher than music to match perceived loudness |
 | Custom music | 0.50 | Target RMS after normalization |
 | Master gain | 0.70 | `mainVolume`, capped at 0.89 headroom |
 | Fade in/out | 10s each | Linear ramp on master gain |
@@ -217,7 +217,8 @@ Every session logs a detailed processing chain to the console:
 | `fadeOut` | 10s | Session fade-out duration |
 | `noiseFade` | 3s | Loop boundary fade duration |
 | `finalBuffer` | 3s | Silence appended after fade-out |
-| `defaultBackgroundVolume` | 0.5 | Target level for background audio |
+| `defaultBackgroundVolume` | 0.5 | RMS target for custom music normalization |
+| `defaultNoiseVolume` | 0.7 | Gain for built-in noise (higher to match music loudness) |
 | `maxScale` | 4 | Maximum RMS normalization multiplier |
 | Limiter ceiling | 0.85 | Maximum peak after limiting |
 | Safety ceiling | 0.95 | Absolute maximum before Tone.js mix |
