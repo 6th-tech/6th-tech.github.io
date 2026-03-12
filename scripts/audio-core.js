@@ -147,9 +147,9 @@ async function generateAudio(options) {
 		console.log(`  Active RMS=${active.rms.toFixed(4)} (${active.activePct.toFixed(1)}% active), silence gap ratio: ${(100 - active.activePct).toFixed(1)}%`);
 
 		// Boost isochronic volume for loud backgrounds so tones don't get buried.
-		// Gradual ramp: 0% boost at activeRms=0.15, up to 25% boost at activeRms≥0.30
-		if (active.rms > 0.15) {
-			const boostFactor = 1 + 0.25 * Math.min((active.rms - 0.15) / 0.15, 1);
+		// Gradual ramp: 0% boost at activeRms=0.10, up to 30% boost at activeRms≥0.20
+		if (active.rms > 0.10) {
+			const boostFactor = 1 + 0.30 * Math.min((active.rms - 0.10) / 0.10, 1);
 			isochronicVolume *= boostFactor;
 			console.log(`  Isochronic boost: ${((boostFactor - 1) * 100).toFixed(0)}% → volume ${isochronicVolume.toFixed(4)} (active RMS ${active.rms.toFixed(4)})`);
 		}
