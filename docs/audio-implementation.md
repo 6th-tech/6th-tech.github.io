@@ -82,7 +82,24 @@ rmsScale = targetVolume / musicRms
 scale = min(rmsScale, 4)
 ```
 
-### 1b. Isochronic Volume Boost for Loud Backgrounds
+### 1b. Carrier Frequency Compensation
+
+Human hearing is less sensitive to lower frequencies (Fletcher-Munson equal-loudness contours). A 174 Hz carrier sounds noticeably quieter than a 528 Hz carrier at the same amplitude. To compensate, isochronic volume is boosted for carriers below 400 Hz:
+
+```
+freqBoost = 1 + 0.30 * (1 - carrierFreq / 400)
+```
+
+| Carrier | Boost |
+|---|---|
+| 174 Hz | +17% |
+| 285 Hz | +9% |
+| 396 Hz | +0.3% |
+| 417+ Hz | None |
+
+This applies to all sessions (noise and custom music), before the active-RMS-based boost.
+
+### 1c. Isochronic Volume Boost for Loud Backgrounds
 
 For custom music sessions, if the source file's active RMS exceeds 0.15, the isochronic tone volume is gradually increased so the tones don't get buried under loud background audio. The boost ramps linearly:
 

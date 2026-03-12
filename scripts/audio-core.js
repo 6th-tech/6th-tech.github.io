@@ -114,6 +114,14 @@ async function generateAudio(options) {
 
 	let isochronicVolume = isochronicVolumeBase;
 
+	// Compensate for equal-loudness: lower carriers sound quieter to human ears.
+	// Up to 30% boost for carriers well below 400 Hz (based on Fletcher-Munson curves)
+	if (carrierFreq < 400) {
+		const freqBoost = 1 + 0.30 * (1 - carrierFreq / 400);
+		isochronicVolume *= freqBoost;
+		console.log(`  Carrier freq compensation: +${((freqBoost - 1) * 100).toFixed(0)}% → isochronic ${isochronicVolume.toFixed(4)} (${carrierFreq}Hz < 400Hz)`);
+	}
+
 	const durationSec = Math.max(0.01, Number(length) || 0);
 	if (!sequence.length) throw new Error("Sequence is empty or invalid.");
 
