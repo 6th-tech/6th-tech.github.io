@@ -108,9 +108,11 @@ async function generateAudio(options) {
 		customNoiseVolume = null,
 		useBinaural = false,
 		binauralVolume = 0.12,
-		isochronicVolume = 0.35,
+		isochronicVolume: isochronicVolumeBase = 0.35,
 		muteIsochronic = false
 	} = options;
+
+	let isochronicVolume = isochronicVolumeBase;
 
 	const durationSec = Math.max(0.01, Number(length) || 0);
 	if (!sequence.length) throw new Error("Sequence is empty or invalid.");
@@ -143,6 +145,14 @@ async function generateAudio(options) {
 		console.log(`  Music buffer: RMS=${musicRms.toFixed(4)}, peak=${musicPeak.toFixed(4)}, scale=${scale.toFixed(4)}, scaledPeak=${scaledPeak.toFixed(4)}`);
 		const active = getActiveRms(decodedNoiseBuffer);
 		console.log(`  Active RMS=${active.rms.toFixed(4)} (${active.activePct.toFixed(1)}% active), silence gap ratio: ${(100 - active.activePct).toFixed(1)}%`);
+
+		// Boost isochronic volume for loud backgrounds so tones don't get buried.
+		// Gradual ramp: 0% boost at activeRms=0.15, up to 25% boost at activeRms≥0.30
+		if (active.rms > 0.15) {
+			const boostFactor = 1 + 0.25 * Math.min((active.rms - 0.15) / 0.15, 1);
+			isochronicVolume *= boostFactor;
+			console.log(`  Isochronic boost: ${((boostFactor - 1) * 100).toFixed(0)}% → volume ${isochronicVolume.toFixed(4)} (active RMS ${active.rms.toFixed(4)})`);
+		}
 
 		// Create a scaled copy
 		const ctx = new OfflineAudioContext(decodedNoiseBuffer.numberOfChannels, decodedNoiseBuffer.length, decodedNoiseBuffer.sampleRate);

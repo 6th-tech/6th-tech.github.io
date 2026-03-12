@@ -24,6 +24,9 @@ Source file
   ├─ RMS normalization (target = customNoiseVolume or 0.5)
   │    └─ Scale factor capped at 4x to prevent extreme amplification
   │
+  ├─ Isochronic volume boost (up to 25% for loud backgrounds)
+  │    └─ Gradual ramp based on active RMS (0.15–0.30)
+  │
   ├─ True peak limiter (ceiling = 0.85, look-ahead = 10ms)
   │    └─ Only activates if scaled peak > 0.85
   │
@@ -58,7 +61,7 @@ Tone.js Offline renders everything:
 
 | Component | Level | Notes |
 |-----------|-------|-------|
-| Isochronic tones | 0.35 | LFO max; carrier gated 0→0.35 |
+| Isochronic tones | 0.35–0.4375 | LFO max; boosted up to 25% for loud backgrounds |
 | Binaural beats | 0.12 | Per-channel, stereo panned L/R |
 | Background noise | 0.50 | `defaultBackgroundVolume` |
 | Custom music | 0.50 | Target RMS after normalization |
@@ -78,6 +81,21 @@ Scales custom music so that all sources reach the same target perceived loudness
 rmsScale = targetVolume / musicRms
 scale = min(rmsScale, 4)
 ```
+
+### 1b. Isochronic Volume Boost for Loud Backgrounds
+
+For custom music sessions, if the source file's active RMS exceeds 0.15, the isochronic tone volume is gradually increased so the tones don't get buried under loud background audio. The boost ramps linearly:
+
+- **No boost** when active RMS ≤ 0.15 (quiet or sparse sources)
+- **Gradual ramp** from 0% to 25% as active RMS goes from 0.15 to 0.30
+- **Full 25% boost** (0.35 → 0.4375) when active RMS ≥ 0.30
+
+```
+boostFactor = 1 + 0.25 * min((activeRms - 0.15) / 0.15, 1)
+isochronicVolume *= boostFactor
+```
+
+This maintains the research-recommended ratio between isochronic tones and background (-14 to -16 dB) regardless of source loudness. The gradual ramp avoids any hard threshold discontinuity. No artifact risk — it's simply a higher gain on a clean sine oscillator, and the post-render normalization handles any combined peaks.
 
 ### 2. True Peak Limiter
 
