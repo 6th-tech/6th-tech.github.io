@@ -20,10 +20,10 @@ function parseSequence(sequenceText) {
 		.split("\n")
 		.filter(line => line.length > 0)
 		.map(line => {
-			const [frequency, duration, rampDuration] = line
+			const [frequency, duration, rampDuration, rampType, stepCarrier] = line
 				.split(",")
 				.map(v => (v !== undefined && v !== null ? parseFloat(v.trim()) : undefined));
-			return { frequency, duration, rampDuration };
+			return { frequency, duration, rampDuration, rampType: rampType || 0, carrierFreq: stepCarrier };
 		})
 		.filter(step => Number.isFinite(step.frequency) && Number.isFinite(step.duration));
 
@@ -214,8 +214,10 @@ async function generateAudio(options) {
 	// no Tone.Buffer conversion, no black-box behavior.
 	const rendered = await Tone.Offline(({ transport }) => {
 		// Carrier gated by LFO -> master
+		// Use first step's carrier if specified, otherwise fall back to session-level carrierFreq
+		const initialCarrier = sequence[0].carrierFreq || carrierFreq;
 		const oscGate = new Tone.Gain(0);
-		const osc = new Tone.Oscillator(carrierFreq, "sine").connect(oscGate);
+		const osc = new Tone.Oscillator(initialCarrier, "sine").connect(oscGate);
 
 		const firstFreq = sequence[0].frequency;
 		const lfo = new Tone.LFO({ frequency: firstFreq, min: 0, max: isochronicVolume, type: "sine" }).connect(oscGate.gain);
@@ -224,8 +226,8 @@ async function generateAudio(options) {
 		let binauralL, binauralR, panL, panR, binauralGain;
 		if (useBinaural && numChannels === 2) {
 			const firstBeatFreq = sequence[0].frequency;
-			binauralL = new Tone.Oscillator(carrierFreq, "sine");
-			binauralR = new Tone.Oscillator(carrierFreq + firstBeatFreq, "sine");
+			binauralL = new Tone.Oscillator(initialCarrier, "sine");
+			binauralR = new Tone.Oscillator(initialCarrier + firstBeatFreq, "sine");
 			panL = new Tone.Panner(-1);
 			panR = new Tone.Panner(1);
 			binauralGain = new Tone.Gain(0);
@@ -270,14 +272,37 @@ async function generateAudio(options) {
 
 		// Schedule frequency ramps
 		let currentTime = 0;
+		let currentCarrier = initialCarrier;
 		sequence.forEach(step => {
 			if (step.rampDuration) {
+				const stepCarrier = step.carrierFreq || currentCarrier;
 				transport.schedule((time) => {
-					lfo.frequency.linearRampTo(step.frequency, step.rampDuration, time);
+					const rampFn = step.rampType === 1 ? 'exponentialRampTo' : 'linearRampTo';
+					lfo.frequency[rampFn](step.frequency, step.rampDuration, time);
+					if (step.carrierFreq) {
+						osc.frequency[rampFn](step.carrierFreq, step.rampDuration, time);
+					}
 					if (binauralR) {
-						binauralR.frequency.linearRampTo(carrierFreq + step.frequency, step.rampDuration, time);
+						if (step.carrierFreq) {
+							binauralL.frequency[rampFn](step.carrierFreq, step.rampDuration, time);
+						}
+						binauralR.frequency[rampFn](stepCarrier + step.frequency, step.rampDuration, time);
 					}
 				}, currentTime);
+			} else if (step.carrierFreq) {
+				// No ramp but carrier changes — set immediately
+				transport.schedule((time) => {
+					osc.frequency.setValueAtTime(step.carrierFreq, time);
+					if (binauralL) {
+						binauralL.frequency.setValueAtTime(step.carrierFreq, time);
+					}
+					if (binauralR) {
+						binauralR.frequency.setValueAtTime(step.carrierFreq + step.frequency, time);
+					}
+				}, currentTime);
+			}
+			if (step.carrierFreq) {
+				currentCarrier = step.carrierFreq;
 			}
 			currentTime += step.duration + (step.rampDuration || 0);
 		});
