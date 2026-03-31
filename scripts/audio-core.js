@@ -293,6 +293,7 @@ async function generateAudio(options) {
 			} else if (step.carrierFreq) {
 				// No ramp but carrier changes — set immediately
 				transport.schedule((time) => {
+					lfo.frequency.setValueAtTime(step.frequency, time);
 					osc.frequency.setValueAtTime(step.carrierFreq, time);
 					if (binauralL) {
 						binauralL.frequency.setValueAtTime(step.carrierFreq, time);
