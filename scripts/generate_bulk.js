@@ -39,7 +39,7 @@ function handleJsonFile() {
 			
 			// Validate each config item
 			jsonConfig.forEach((config, index) => {
-				if (!config.carrierFrequency || !config.backgroundSound || !config.audioFile || !config.sequence) {
+				if (!config.backgroundSound || !config.audioFile || !config.sequence) {
 					throw new Error(`Invalid configuration at index ${index}: missing required fields`);
 				}
 			});
@@ -138,7 +138,7 @@ function getBulkGenerationRules(backgroundSound) {
 }
 
 async function generateSingleAudio(config, index) {
-	const { carrierFrequency, backgroundSound, audioFile } = config;
+	const { backgroundSound, audioFile } = config;
 	const isShortSession = shortSessionsCheckbox.checked;
 	const sequenceData = isShortSession ? config.shortSequence : config.sequence;
 
@@ -147,7 +147,7 @@ async function generateSingleAudio(config, index) {
 	const downloadItem = document.createElement('div');
 	downloadItem.className = 'download-item generating';
 	downloadItem.innerHTML = `
-		<span>${audioFile} (${carrierFrequency}Hz, ${backgroundSound})</span>
+		<span>${audioFile} (${backgroundSound})</span>
 		<span>Generating...</span>
 	`;
 	downloadsList.appendChild(downloadItem);
@@ -177,7 +177,6 @@ async function generateSingleAudio(config, index) {
 		const audioOptions = {
 			sequence: parsedSequence,
 			length,
-			carrierFreq: carrierFrequency,
 			noiseType,
 			mainVolume: parseFloat(document.querySelector("#mainVolume").value),
 			useNoiseModulation: rules.useNoiseModulation,
@@ -199,7 +198,7 @@ async function generateSingleAudio(config, index) {
 		// Update UI
 		downloadItem.className = 'download-item completed';
 		downloadItem.innerHTML = `
-			<span>${audioFile} (${carrierFrequency}Hz, ${backgroundSound})</span>
+			<span>${audioFile} (${backgroundSound})</span>
 			<span class="success-message">&#10003; Generated: ${fileName}</span>
 		`;
 		
@@ -209,7 +208,7 @@ async function generateSingleAudio(config, index) {
 		console.error(`Error generating ${audioFile}:`, error);
 		downloadItem.className = 'download-item error';
 		downloadItem.innerHTML = `
-			<span>${audioFile} (${carrierFrequency}Hz, ${backgroundSound})</span>
+			<span>${audioFile} (${backgroundSound})</span>
 			<span class="error-message">&#10007; Error: ${error.message}</span>
 		`;
 		return false;

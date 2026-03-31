@@ -99,7 +99,6 @@ async function generateAudio(options) {
 	const {
 		sequence,
 		length,
-		carrierFreq,
 		noiseType = 'brown',
 		mainVolume = 0.7,
 		useNoiseModulation = false,
@@ -113,24 +112,27 @@ async function generateAudio(options) {
 		muteIsochronic = false
 	} = options;
 
+	const durationSec = Math.max(0.01, Number(length) || 0);
+	if (!sequence.length) throw new Error("Sequence is empty or invalid.");
+
+	// Derive starting carrier from first step's carrier field
+	const startingCarrier = sequence[0].carrierFreq || 174;
+
 	let isochronicVolume = isochronicVolumeBase;
 
 	// Compensate for equal-loudness: lower carriers sound quieter to human ears.
 	// Up to 30% boost for carriers well below 400 Hz (based on Fletcher-Munson curves)
-	if (carrierFreq < 400) {
-		const freqBoost = 1 + 0.30 * (1 - carrierFreq / 400);
+	if (startingCarrier < 400) {
+		const freqBoost = 1 + 0.30 * (1 - startingCarrier / 400);
 		isochronicVolume *= freqBoost;
-		console.log(`  Carrier freq compensation: +${((freqBoost - 1) * 100).toFixed(0)}% → isochronic ${isochronicVolume.toFixed(4)} (${carrierFreq}Hz < 400Hz)`);
+		console.log(`  Carrier freq compensation: +${((freqBoost - 1) * 100).toFixed(0)}% → isochronic ${isochronicVolume.toFixed(4)} (${startingCarrier}Hz < 400Hz)`);
 	}
-
-	const durationSec = Math.max(0.01, Number(length) || 0);
-	if (!sequence.length) throw new Error("Sequence is empty or invalid.");
 
 	// Session details log
 	const backgroundType = decodedNoiseBuffer ? 'custom music' : `${noiseType} noise`;
 	console.log(`--- Session config ---`);
 	console.log(`  Background: ${backgroundType}`);
-	console.log(`  Carrier: ${carrierFreq}Hz | Isochronic: ${muteIsochronic ? 'muted' : isochronicVolume}`);
+	console.log(`  Starting carrier: ${startingCarrier}Hz | Isochronic: ${muteIsochronic ? 'muted' : isochronicVolume}`);
 	console.log(`  Binaural: ${useBinaural ? `on (${binauralVolume})` : 'off'} | Main volume: ${mainVolume}`);
 	console.log(`  Duration: ${(durationSec / 60).toFixed(1)}min`);
 
@@ -214,8 +216,7 @@ async function generateAudio(options) {
 	// no Tone.Buffer conversion, no black-box behavior.
 	const rendered = await Tone.Offline(({ transport }) => {
 		// Carrier gated by LFO -> master
-		// Use first step's carrier if specified, otherwise fall back to session-level carrierFreq
-		const initialCarrier = sequence[0].carrierFreq || carrierFreq;
+		const initialCarrier = startingCarrier;
 		const oscGate = new Tone.Gain(0);
 		const osc = new Tone.Oscillator(initialCarrier, "sine").connect(oscGate);
 
@@ -544,7 +545,3 @@ function isNoiseType(backgroundSound) {
 	return ['white', 'pink', 'brown'].includes(backgroundSound.toLowerCase());
 }
 
-function generateFileName(audioFile, carrierFreq, backgroundSound) {
-	const noiseType = isNoiseType(backgroundSound) ? backgroundSound : 'custom';
-	return `${audioFile}_${carrierFreq}Hz_${noiseType}.wav`;
-}

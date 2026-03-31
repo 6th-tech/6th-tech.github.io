@@ -11,7 +11,7 @@ const alwaysMonoCheckbox = document.querySelector("#alwaysMono");
 const useBinauralCheckbox = document.querySelector("#useBinaural");
 const muteIsochronicCheckbox = document.querySelector("#muteIsochronic");
 
-let sequence, noiseType, carrierFreq, length;
+let sequence, noiseType, length;
 let isAudioFileLoaded = false;
 let decodedNoiseBuffer = null; // holds decoded user noise (AudioBuffer)
 
@@ -31,7 +31,6 @@ function initData() {
 	parseSequenceFromTextArea();
 	noiseType = document.getElementById("noiseType").value;
 	mainVolume = parseFloat(document.getElementById("mainVolume").value);
-	carrierFreq = parseInt(document.getElementById("carrierFreq").value);
 }
 
 // --------- Noise file decode (for offline render) ---------
@@ -59,7 +58,6 @@ async function renderOfflineToBuffer() {
 	const audioOptions = {
 		sequence,
 		length,
-		carrierFreq,
 		noiseType,
 		mainVolume,
 		useNoiseModulation: noiseModulationCheckbox.checked,
@@ -77,7 +75,7 @@ async function renderOfflineToBuffer() {
 
 function downloadWavFromUI(buffer) {
 	const last = sequence[sequence.length - 1] || { frequency: 0 };
-	const fileName = (document.getElementById("name").value || `${last.frequency}Hz_${carrierFreq}Hz_${noiseType}`) + ".wav";
+	const fileName = (document.getElementById("name").value || `${last.frequency}Hz_${noiseType}`) + ".wav";
 	downloadWav(buffer, fileName);
 }
 

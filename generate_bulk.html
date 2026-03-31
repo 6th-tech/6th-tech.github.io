@@ -84,24 +84,18 @@
 		
 		<div class="info-section">
 			<h3>JSON Configuration Format</h3>
+			<p>Sequence format: <code>frequency, duration, rampDuration, rampType, carrierFreq</code><br>
+			Fields 3-5 are optional. rampType: 0=linear (default), 1=exponential. carrierFreq: Solfeggio frequency for this step.</p>
 			<pre><code>[
   {
-    "carrierFrequency": 417,
     "backgroundSound": "brown",
     "audioFile": "be_happy",
-    "sequence": "20.3, 30\n14.1, 30, 30\n7.83, 120, 30\n11, 390, 30"
+    "sequence": "20.3, 18, 0, 0, 639\n16, 18, 12\n14.22, 25, 12\n12.8, 30, 12, 0, 528\n10.67, 35, 12, 0, 417\n10.67, 304, 12"
   },
   {
-    "carrierFrequency": 528,
-    "backgroundSound": "white",
-    "audioFile": "positive_thinking",
-    "sequence": "20.3, 30\n14.1, 30, 30\n7.83, 60, 30\n12, 90, 30\n11, 330, 30"
-  },
-  {
-    "carrierFrequency": 417,
     "backgroundSound": "light-rain-ambient-114354.mp3",
     "audioFile": "sleep_well",
-    "sequence": "20.3, 30\n14.1, 30, 30\n3.9, 90, 30\n7.83, 90, 30\n2.5, 300, 30"
+    "sequence": "20.3, 8, 0, 0, 852\n16, 8, 8, 0, 639\n12, 10, 10, 0, 528\n8, 12, 12, 0, 396\n7.11, 12, 10, 0, 285\n6, 20, 12, 1\n3.56, 15, 10, 0, 174\n2, 268, 12"
   }
 ]</code></pre>
 			<div class="rules">
