@@ -227,8 +227,11 @@ async function generateAudio(options) {
 		let binauralL, binauralR, panL, panR, binauralGain;
 		if (useBinaural && numChannels === 2) {
 			const firstBeatFreq = sequence[0].frequency;
-			binauralL = new Tone.Oscillator(initialCarrier, "sine");
-			binauralR = new Tone.Oscillator(initialCarrier + firstBeatFreq, "sine");
+			// Symmetric carriers around C: L = C - f/2, R = C + f/2.
+			// Same Δf = f (identical binaural percept), but neither side equals the
+			// mono isochronic carrier C, so no unintended one-sided monaural beat.
+			binauralL = new Tone.Oscillator(initialCarrier - firstBeatFreq / 2, "sine");
+			binauralR = new Tone.Oscillator(initialCarrier + firstBeatFreq / 2, "sine");
 			panL = new Tone.Panner(-1);
 			panR = new Tone.Panner(1);
 			binauralGain = new Tone.Gain(0);
@@ -284,10 +287,10 @@ async function generateAudio(options) {
 						osc.frequency[rampFn](step.carrierFreq, step.rampDuration, time);
 					}
 					if (binauralR) {
-						if (step.carrierFreq) {
-							binauralL.frequency[rampFn](step.carrierFreq, step.rampDuration, time);
-						}
-						binauralR.frequency[rampFn](stepCarrier + step.frequency, step.rampDuration, time);
+						// Ramp both sides symmetrically around the carrier (C ± f/2)
+						// every step — the beat f changes per-step even when C does not.
+						binauralL.frequency[rampFn](stepCarrier - step.frequency / 2, step.rampDuration, time);
+						binauralR.frequency[rampFn](stepCarrier + step.frequency / 2, step.rampDuration, time);
 					}
 				}, currentTime);
 			} else if (step.carrierFreq) {
@@ -296,10 +299,10 @@ async function generateAudio(options) {
 					lfo.frequency.setValueAtTime(step.frequency, time);
 					osc.frequency.setValueAtTime(step.carrierFreq, time);
 					if (binauralL) {
-						binauralL.frequency.setValueAtTime(step.carrierFreq, time);
+						binauralL.frequency.setValueAtTime(step.carrierFreq - step.frequency / 2, time);
 					}
 					if (binauralR) {
-						binauralR.frequency.setValueAtTime(step.carrierFreq + step.frequency, time);
+						binauralR.frequency.setValueAtTime(step.carrierFreq + step.frequency / 2, time);
 					}
 				}, currentTime);
 			}
