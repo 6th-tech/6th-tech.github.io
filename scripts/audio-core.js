@@ -121,23 +121,20 @@ async function generateAudio(options) {
 	let isochronicVolume = isochronicVolumeBase;
 	let binauralVolume = binauralVolumeBase;
 
-	// Compensate for equal-loudness: lower carriers sound quieter to human ears.
-	// Up to 30% boost for carriers well below 400 Hz (based on Fletcher-Munson curves).
-	// Applied to binaural too — its carriers (C ± f/2) sit at the same low frequencies
-	// and would otherwise be masked by the low-frequency-heavy background in deep sessions.
-	if (startingCarrier < 400) {
-		const freqBoost = 1 + 0.30 * (1 - startingCarrier / 400);
-		isochronicVolume *= freqBoost;
-		binauralVolume *= freqBoost;
-		console.log(`  Carrier freq compensation: +${((freqBoost - 1) * 100).toFixed(0)}% → isochronic ${isochronicVolume.toFixed(4)}, binaural ${binauralVolume.toFixed(4)} (${startingCarrier}Hz < 400Hz)`);
-	}
+	// Equal-loudness compensation (Fletcher-Munson): lower carriers sound quieter to
+	// human ears, so tone-layer gains are boosted up to 30% for carriers below 400 Hz.
+	// Applied DYNAMICALLY — the gains follow the carrier as it descends through the
+	// session, so a session starting at 852 Hz still gets compensated once its carrier
+	// reaches 285/174. Applies to both isochronic and binaural (whose carriers C ± f/2
+	// sit in the same low range and would otherwise be masked by the background).
+	const equalLoudnessBoost = (carrier) => carrier < 400 ? 1 + 0.30 * (1 - carrier / 400) : 1;
 
 	// Session details log
 	const backgroundType = decodedNoiseBuffer ? 'custom music' : `${noiseType} noise`;
 	console.log(`--- Session config ---`);
 	console.log(`  Background: ${backgroundType}`);
-	console.log(`  Starting carrier: ${startingCarrier}Hz | Isochronic: ${muteIsochronic ? 'muted' : isochronicVolume}`);
-	console.log(`  Binaural: ${useBinaural ? `on (${binauralVolume})` : 'off'} | Main volume: ${mainVolume}`);
+	console.log(`  Starting carrier: ${startingCarrier}Hz | Isochronic: ${muteIsochronic ? 'muted' : isochronicVolume} (carrier-tracked equal-loudness ×1.0–1.3)`);
+	console.log(`  Binaural: ${useBinaural ? `on (${binauralVolume}, carrier-tracked)` : 'off'} | Main volume: ${mainVolume}`);
 	console.log(`  Duration: ${(durationSec / 60).toFixed(1)}min`);
 
 	// Choose channel count dynamically
@@ -220,10 +217,12 @@ async function generateAudio(options) {
 	// temporarily boosted — the "reconciling force" carries the process across the
 	// interval where listeners tend to snap back to alertness. Detected from the
 	// sequence itself; envelope timing derives entirely from the steps' durations.
-	// Level is capped at half the isochronic volume so the layer hierarchy
-	// (isochronic dominant) can never invert.
+	// The boost is a multiplicative factor on the carrier-tracked base level, capped
+	// so emphasized binaural stays at least ~4 dB below the isochronic peak — the
+	// layer hierarchy (isochronic dominant) can never invert. Since both layers get
+	// the same equal-loudness boost, the ratio guard holds at every carrier.
 	const OCTAVE_DO_BOUNDARIES = [16, 8, 4, 2];
-	const binauralEmphasisVolume = Math.min(1.4 * binauralVolume, 0.5 * isochronicVolume);
+	const binauralEmphasisFactor = Math.min(1.4, (0.65 * isochronicVolume) / binauralVolume);
 	const sidoWindows = [];
 	if (useBinaural) {
 		const fadeOutStartSec = Math.max(0, durationSec - (fadeOut + finalBuffer));
@@ -250,7 +249,7 @@ async function generateAudio(options) {
 		}
 		if (sidoWindows.length) {
 			const at = sidoWindows.map(w => `${w.riseStart.toFixed(0)}-${w.decayEnd.toFixed(0)}s`).join(', ');
-			console.log(`  SI-DO emphasis: ${sidoWindows.length} crossing(s) [${at}] → binaural ${binauralVolume.toFixed(4)} → ${binauralEmphasisVolume.toFixed(4)}`);
+			console.log(`  SI-DO emphasis: ${sidoWindows.length} crossing(s) [${at}] → binaural ×${binauralEmphasisFactor.toFixed(2)}`);
 		}
 	}
 
@@ -258,16 +257,18 @@ async function generateAudio(options) {
 	// Custom music is mixed in afterward with simple math — no Tone.Player,
 	// no Tone.Buffer conversion, no black-box behavior.
 	const rendered = await Tone.Offline(({ transport }) => {
-		// Carrier gated by LFO -> master
+		// Carrier gated by LFO (0..1) -> carrier-tracked level gain -> master
 		const initialCarrier = startingCarrier;
 		const oscGate = new Tone.Gain(0);
+		const isoLevel = new Tone.Gain(isochronicVolume * equalLoudnessBoost(initialCarrier));
 		const osc = new Tone.Oscillator(initialCarrier, "sine").connect(oscGate);
+		oscGate.connect(isoLevel);
 
 		const firstFreq = sequence[0].frequency;
-		const lfo = new Tone.LFO({ frequency: firstFreq, min: 0, max: isochronicVolume, type: "sine" }).connect(oscGate.gain);
+		const lfo = new Tone.LFO({ frequency: firstFreq, min: 0, max: 1, type: "sine" }).connect(oscGate.gain);
 
-		// Binaural layer
-		let binauralL, binauralR, panL, panR, binauralGain;
+		// Binaural layer: fade/emphasis gain (0..1..emphasisFactor) -> carrier-tracked level gain
+		let binauralL, binauralR, panL, panR, binauralGain, binauralLevel;
 		if (useBinaural && numChannels === 2) {
 			const firstBeatFreq = sequence[0].frequency;
 			// Symmetric carriers around C: L = C - f/2, R = C + f/2.
@@ -278,10 +279,12 @@ async function generateAudio(options) {
 			panL = new Tone.Panner(-1);
 			panR = new Tone.Panner(1);
 			binauralGain = new Tone.Gain(0);
+			binauralLevel = new Tone.Gain(binauralVolume * equalLoudnessBoost(initialCarrier));
 			binauralL.connect(panL);
 			binauralR.connect(panR);
 			panL.connect(binauralGain);
 			panR.connect(binauralGain);
+			binauralGain.connect(binauralLevel);
 			binauralL.start(0);
 			binauralR.start(0);
 		}
@@ -289,7 +292,7 @@ async function generateAudio(options) {
 		// Master out
 		const master = new Tone.Gain(0).toDestination();
 		if (!muteIsochronic) {
-			oscGate.connect(master);
+			isoLevel.connect(master);
 		}
 
 		// Built-in noise (only for noise sessions, NOT custom music)
@@ -310,8 +313,8 @@ async function generateAudio(options) {
 			noiseGain.connect(master);
 		}
 
-		if (binauralGain) {
-			binauralGain.connect(master);
+		if (binauralLevel) {
+			binauralLevel.connect(master);
 		}
 
 		osc.start(0);
@@ -328,6 +331,12 @@ async function generateAudio(options) {
 					lfo.frequency[rampFn](step.frequency, step.rampDuration, time);
 					if (step.carrierFreq) {
 						osc.frequency[rampFn](step.carrierFreq, step.rampDuration, time);
+						// Equal-loudness gains track the carrier descent
+						const boost = equalLoudnessBoost(step.carrierFreq);
+						isoLevel.gain[rampFn](isochronicVolume * boost, step.rampDuration, time);
+						if (binauralLevel) {
+							binauralLevel.gain[rampFn](binauralVolume * boost, step.rampDuration, time);
+						}
 					}
 					if (binauralR) {
 						// Ramp both sides symmetrically around the carrier (C ± f/2)
@@ -341,6 +350,11 @@ async function generateAudio(options) {
 				transport.schedule((time) => {
 					lfo.frequency.setValueAtTime(step.frequency, time);
 					osc.frequency.setValueAtTime(step.carrierFreq, time);
+					const boost = equalLoudnessBoost(step.carrierFreq);
+					isoLevel.gain.setValueAtTime(isochronicVolume * boost, time);
+					if (binauralLevel) {
+						binauralLevel.gain.setValueAtTime(binauralVolume * boost, time);
+					}
 					if (binauralL) {
 						binauralL.frequency.setValueAtTime(step.carrierFreq - step.frequency / 2, time);
 					}
@@ -364,19 +378,21 @@ async function generateAudio(options) {
 		master.gain.linearRampToValueAtTime(0, Math.min(durationSec, fadeOutStart + fadeOut));
 
 		if (binauralGain) {
+			// binauralGain is normalized (0..1): session fades and SI-DO emphasis factor.
+			// The absolute level lives in binauralLevel (carrier-tracked equal-loudness).
 			binauralGain.gain.setValueAtTime(0, 0);
-			binauralGain.gain.linearRampToValueAtTime(binauralVolume, Math.min(fadeIn, durationSec));
-			binauralGain.gain.setValueAtTime(binauralVolume, fadeOutStart);
+			binauralGain.gain.linearRampToValueAtTime(1, Math.min(fadeIn, durationSec));
+			binauralGain.gain.setValueAtTime(1, fadeOutStart);
 			binauralGain.gain.linearRampToValueAtTime(0, Math.min(durationSec, fadeOutStart + fadeOut));
 
 			// SI-DO emphasis envelopes: rise across the lift step, hold through the
 			// exponential ramp, decay into the DO hold. Windows are pre-filtered to
 			// never overlap the fade-in/fade-out automation above.
 			sidoWindows.forEach(w => {
-				binauralGain.gain.setValueAtTime(binauralVolume, w.riseStart);
-				binauralGain.gain.linearRampToValueAtTime(binauralEmphasisVolume, w.riseEnd);
-				binauralGain.gain.setValueAtTime(binauralEmphasisVolume, w.peakEnd);
-				binauralGain.gain.linearRampToValueAtTime(binauralVolume, w.decayEnd);
+				binauralGain.gain.setValueAtTime(1, w.riseStart);
+				binauralGain.gain.linearRampToValueAtTime(binauralEmphasisFactor, w.riseEnd);
+				binauralGain.gain.setValueAtTime(binauralEmphasisFactor, w.peakEnd);
+				binauralGain.gain.linearRampToValueAtTime(1, w.decayEnd);
 			});
 		}
 

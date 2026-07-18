@@ -61,8 +61,8 @@ Tone.js Offline renders everything:
 
 | Component | Level | Notes |
 |-----------|-------|-------|
-| Isochronic tones | 0.35–0.455 | LFO max; boosted up to 30% for loud backgrounds |
-| Binaural beats | 0.16–0.19 | Per-channel, stereo panned L/R; boosted up to 30% for low carriers |
+| Isochronic tones | 0.35 base | ×1.0–1.3 carrier-tracked equal-loudness; up to +30% for loud backgrounds |
+| Binaural beats | 0.16 base | Per-channel, stereo panned L/R; ×1.0–1.3 carrier-tracked; ×1.4 during SI-DO emphasis |
 | Background noise | 0.70 | `defaultNoiseVolume` — higher than music to match perceived loudness |
 | Custom music | 0.50 | Target RMS after normalization |
 | Master gain | 0.70 | `mainVolume`, capped at 0.89 headroom |
@@ -84,7 +84,7 @@ scale = min(rmsScale, 4)
 
 ### 1b. Carrier Frequency Compensation
 
-Human hearing is less sensitive to lower frequencies (Fletcher-Munson equal-loudness contours). A 174 Hz carrier sounds noticeably quieter than a 528 Hz carrier at the same amplitude. To compensate, isochronic and binaural volumes are boosted for carriers below 400 Hz:
+Human hearing is less sensitive to lower frequencies (Fletcher-Munson equal-loudness contours). A 174 Hz carrier sounds noticeably quieter than a 528 Hz carrier at the same amplitude. To compensate, the isochronic and binaural levels are boosted for carriers below 400 Hz — **dynamically**: each tone layer runs through a dedicated level gain that ramps alongside the carrier frequency ramps. A session starting at 852 Hz gets no boost at entry, then gains it progressively as its carrier descends through 285 to 174 Hz. (Previously the boost keyed off the session's *starting* carrier, which meant octave-aligned sessions — whose carriers all start ≥ 528 Hz — never received any compensation.)
 
 ```
 freqBoost = 1 + 0.30 * (1 - carrierFreq / 400)
@@ -97,7 +97,26 @@ freqBoost = 1 + 0.30 * (1 - carrierFreq / 400)
 | 396 Hz | +0.3% |
 | 417+ Hz | None |
 
-This applies to all sessions (noise and custom music), before the active-RMS-based boost. The binaural layer receives the same boost — its carriers (C ± f/2) sit in the same low-frequency region and would otherwise fall below the masked threshold of the low-frequency-heavy background (brown noise) in deep sessions. The active-RMS-based boost (1c) applies to isochronic only.
+This applies to all sessions (noise and custom music). The binaural layer receives the same boost — its carriers (C ± f/2) sit in the same low-frequency region and would otherwise fall below the masked threshold of the low-frequency-heavy background (brown noise) in deep sessions. The active-RMS-based boost (1c) applies to isochronic only.
+
+### 1d. SI-DO Binaural Emphasis
+
+At each octave band crossing, the binaural layer is temporarily boosted to carry the entrainment across the interval where listeners tend to snap back to alertness (the "reconciling force" of the octave framework's Law of Three).
+
+**Detection is fully dynamic** — computed from whatever sequence arrives, with no per-session data:
+
+- Step *i* is a shock lift: its frequency is **above** the previous step's
+- Step *i+1* has `rampType=1` (exponential) and a **lower** frequency landing on an octave DO boundary (16 / 8 / 4 / 2 Hz)
+
+Dual-band secondary-band returns never trigger (they use linear ramps), and ascending gamma sequences never trigger (the post-lift step must descend).
+
+**Envelope** (all timing derived from the steps' own durations, so it scales automatically for short sequences):
+
+- **Rise** across the lift step (`ramp + hold`): binaural gain ramps 1.0 → 1.4×
+- **Peak** through the exponential ramp
+- **Decay** back to 1.0 over `min(half the DO step's hold, 20s)`
+
+The factor is capped so emphasized binaural never exceeds 0.65× the isochronic level (~4 dB below its peak) — the layer hierarchy cannot invert. Since both layers share the same carrier-tracked equal-loudness boost, this ratio holds at every carrier. Crossings that would overlap the session fade-in/fade-out are skipped.
 
 ### 1c. Isochronic Volume Boost for Loud Backgrounds
 
@@ -156,7 +175,8 @@ Every session logs a detailed processing chain to the console:
 --- Session config ---
   Background: custom music
   Carrier: 200Hz | Isochronic: 0.35
-  Binaural: on (0.16) | Main volume: 0.7
+  Binaural: on (0.16, carrier-tracked) | Main volume: 0.7
+  SI-DO emphasis: 1 crossing(s) [187-230s] → binaural ×1.40
   Duration: 30.0min
   Music buffer: RMS=0.1234, peak=0.5678, scale=4.0000, scaledPeak=2.2712
   RMS scale 4.05x capped to 4x (very dynamic source)
