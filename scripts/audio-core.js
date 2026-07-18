@@ -107,7 +107,7 @@ async function generateAudio(options) {
 		decodedNoiseBuffer = null,
 		customNoiseVolume = null,
 		useBinaural = false,
-		binauralVolume = 0.12,
+		binauralVolume: binauralVolumeBase = 0.16,
 		isochronicVolume: isochronicVolumeBase = 0.35,
 		muteIsochronic = false
 	} = options;
@@ -119,13 +119,17 @@ async function generateAudio(options) {
 	const startingCarrier = sequence[0].carrierFreq || 174;
 
 	let isochronicVolume = isochronicVolumeBase;
+	let binauralVolume = binauralVolumeBase;
 
 	// Compensate for equal-loudness: lower carriers sound quieter to human ears.
-	// Up to 30% boost for carriers well below 400 Hz (based on Fletcher-Munson curves)
+	// Up to 30% boost for carriers well below 400 Hz (based on Fletcher-Munson curves).
+	// Applied to binaural too — its carriers (C ± f/2) sit at the same low frequencies
+	// and would otherwise be masked by the low-frequency-heavy background in deep sessions.
 	if (startingCarrier < 400) {
 		const freqBoost = 1 + 0.30 * (1 - startingCarrier / 400);
 		isochronicVolume *= freqBoost;
-		console.log(`  Carrier freq compensation: +${((freqBoost - 1) * 100).toFixed(0)}% → isochronic ${isochronicVolume.toFixed(4)} (${startingCarrier}Hz < 400Hz)`);
+		binauralVolume *= freqBoost;
+		console.log(`  Carrier freq compensation: +${((freqBoost - 1) * 100).toFixed(0)}% → isochronic ${isochronicVolume.toFixed(4)}, binaural ${binauralVolume.toFixed(4)} (${startingCarrier}Hz < 400Hz)`);
 	}
 
 	// Session details log

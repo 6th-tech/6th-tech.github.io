@@ -62,7 +62,7 @@ Tone.js Offline renders everything:
 | Component | Level | Notes |
 |-----------|-------|-------|
 | Isochronic tones | 0.35–0.455 | LFO max; boosted up to 30% for loud backgrounds |
-| Binaural beats | 0.12 | Per-channel, stereo panned L/R |
+| Binaural beats | 0.16–0.19 | Per-channel, stereo panned L/R; boosted up to 30% for low carriers |
 | Background noise | 0.70 | `defaultNoiseVolume` — higher than music to match perceived loudness |
 | Custom music | 0.50 | Target RMS after normalization |
 | Master gain | 0.70 | `mainVolume`, capped at 0.89 headroom |
@@ -84,7 +84,7 @@ scale = min(rmsScale, 4)
 
 ### 1b. Carrier Frequency Compensation
 
-Human hearing is less sensitive to lower frequencies (Fletcher-Munson equal-loudness contours). A 174 Hz carrier sounds noticeably quieter than a 528 Hz carrier at the same amplitude. To compensate, isochronic volume is boosted for carriers below 400 Hz:
+Human hearing is less sensitive to lower frequencies (Fletcher-Munson equal-loudness contours). A 174 Hz carrier sounds noticeably quieter than a 528 Hz carrier at the same amplitude. To compensate, isochronic and binaural volumes are boosted for carriers below 400 Hz:
 
 ```
 freqBoost = 1 + 0.30 * (1 - carrierFreq / 400)
@@ -97,7 +97,7 @@ freqBoost = 1 + 0.30 * (1 - carrierFreq / 400)
 | 396 Hz | +0.3% |
 | 417+ Hz | None |
 
-This applies to all sessions (noise and custom music), before the active-RMS-based boost.
+This applies to all sessions (noise and custom music), before the active-RMS-based boost. The binaural layer receives the same boost — its carriers (C ± f/2) sit in the same low-frequency region and would otherwise fall below the masked threshold of the low-frequency-heavy background (brown noise) in deep sessions. The active-RMS-based boost (1c) applies to isochronic only.
 
 ### 1c. Isochronic Volume Boost for Loud Backgrounds
 
@@ -156,7 +156,7 @@ Every session logs a detailed processing chain to the console:
 --- Session config ---
   Background: custom music
   Carrier: 200Hz | Isochronic: 0.35
-  Binaural: on (0.12) | Main volume: 0.7
+  Binaural: on (0.16) | Main volume: 0.7
   Duration: 30.0min
   Music buffer: RMS=0.1234, peak=0.5678, scale=4.0000, scaledPeak=2.2712
   RMS scale 4.05x capped to 4x (very dynamic source)
