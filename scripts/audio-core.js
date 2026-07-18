@@ -215,6 +215,45 @@ async function generateAudio(options) {
 		console.log(`  After processing: RMS=${finalRms.toFixed(4)}, peak=${finalPeak.toFixed(4)}`);
 	}
 
+	// SI-DO binaural emphasis: at each band crossing (a lift step followed by an
+	// exponential ramp landing on an octave DO boundary), the binaural layer is
+	// temporarily boosted — the "reconciling force" carries the process across the
+	// interval where listeners tend to snap back to alertness. Detected from the
+	// sequence itself; envelope timing derives entirely from the steps' durations.
+	// Level is capped at half the isochronic volume so the layer hierarchy
+	// (isochronic dominant) can never invert.
+	const OCTAVE_DO_BOUNDARIES = [16, 8, 4, 2];
+	const binauralEmphasisVolume = Math.min(1.4 * binauralVolume, 0.5 * isochronicVolume);
+	const sidoWindows = [];
+	if (useBinaural) {
+		const fadeOutStartSec = Math.max(0, durationSec - (fadeOut + finalBuffer));
+		let stepStart = sequence[0].duration + (sequence[0].rampDuration || 0);
+		for (let i = 1; i < sequence.length - 1; i++) {
+			const prev = sequence[i - 1];
+			const lift = sequence[i];
+			const next = sequence[i + 1];
+			const isShockLift = lift.frequency > prev.frequency;
+			const landsOnDo = next.rampType === 1 &&
+				next.frequency < lift.frequency &&
+				OCTAVE_DO_BOUNDARIES.some(d => Math.abs(next.frequency - d) < 0.01);
+			if (isShockLift && landsOnDo) {
+				const riseStart = stepStart;
+				const riseEnd = riseStart + (lift.rampDuration || 0) + lift.duration;
+				const peakEnd = riseEnd + (next.rampDuration || 0);
+				const decayEnd = peakEnd + Math.min(next.duration / 2, 20);
+				// Skip crossings that would collide with the session fade envelope
+				if (riseStart > fadeIn && decayEnd < fadeOutStartSec) {
+					sidoWindows.push({ riseStart, riseEnd, peakEnd, decayEnd });
+				}
+			}
+			stepStart += lift.duration + (lift.rampDuration || 0);
+		}
+		if (sidoWindows.length) {
+			const at = sidoWindows.map(w => `${w.riseStart.toFixed(0)}-${w.decayEnd.toFixed(0)}s`).join(', ');
+			console.log(`  SI-DO emphasis: ${sidoWindows.length} crossing(s) [${at}] → binaural ${binauralVolume.toFixed(4)} → ${binauralEmphasisVolume.toFixed(4)}`);
+		}
+	}
+
 	// Tone.js renders ONLY isochronic tones, binaural beats, and built-in noise.
 	// Custom music is mixed in afterward with simple math — no Tone.Player,
 	// no Tone.Buffer conversion, no black-box behavior.
@@ -329,6 +368,16 @@ async function generateAudio(options) {
 			binauralGain.gain.linearRampToValueAtTime(binauralVolume, Math.min(fadeIn, durationSec));
 			binauralGain.gain.setValueAtTime(binauralVolume, fadeOutStart);
 			binauralGain.gain.linearRampToValueAtTime(0, Math.min(durationSec, fadeOutStart + fadeOut));
+
+			// SI-DO emphasis envelopes: rise across the lift step, hold through the
+			// exponential ramp, decay into the DO hold. Windows are pre-filtered to
+			// never overlap the fade-in/fade-out automation above.
+			sidoWindows.forEach(w => {
+				binauralGain.gain.setValueAtTime(binauralVolume, w.riseStart);
+				binauralGain.gain.linearRampToValueAtTime(binauralEmphasisVolume, w.riseEnd);
+				binauralGain.gain.setValueAtTime(binauralEmphasisVolume, w.peakEnd);
+				binauralGain.gain.linearRampToValueAtTime(binauralVolume, w.decayEnd);
+			});
 		}
 
 		transport.start(0);
