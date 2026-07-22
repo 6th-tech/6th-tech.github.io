@@ -67,6 +67,7 @@ async function renderOfflineToBuffer() {
 		customNoiseVolume: parseFloat(document.getElementById("noiseVolume").value),
 		useBinaural: useBinauralCheckbox.checked,
 		isochronicVolume: parseFloat(document.getElementById("isochronicVolume").value),
+		isochronicPunch: parseFloat(document.getElementById("isochronicPunch").value),
 		muteIsochronic: muteIsochronicCheckbox.checked
 	};
 	

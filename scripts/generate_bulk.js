@@ -11,6 +11,7 @@ const audioFolderInput = document.querySelector("#audioFolder");
 const shortSessionsCheckbox = document.querySelector("#shortSessions");
 const useBinauralCheckbox = document.querySelector("#useBinaural");
 const isochronicVolumeInput = document.querySelector("#isochronicVolume");
+const isochronicPunchInput = document.querySelector("#isochronicPunch");
 const muteIsochronicCheckbox = document.querySelector("#muteIsochronic");
 const alwaysMonoCheckbox = document.querySelector("#alwaysMono");
 const generateButton = document.querySelector("#generateButton");
@@ -186,6 +187,7 @@ async function generateSingleAudio(config, index) {
 			customNoiseVolume: rules.customNoiseVolume,
 			useBinaural: useBinauralCheckbox.checked,
 			isochronicVolume: parseFloat(isochronicVolumeInput.value),
+			isochronicPunch: parseFloat(isochronicPunchInput.value),
 			muteIsochronic: muteIsochronicCheckbox.checked
 		};
 		

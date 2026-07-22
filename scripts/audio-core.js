@@ -109,8 +109,14 @@ async function generateAudio(options) {
 		useBinaural = false,
 		binauralVolume: binauralVolumeBase = 0.16,
 		isochronicVolume: isochronicVolumeBase = 0.35,
+		isochronicPunch = 1,
 		muteIsochronic = false
 	} = options;
+
+	// Isochronic "punch": exponent applied to the 0..1 pulse envelope.
+	// 1 = original soft sine throb; >1 narrows each pulse and opens a silence gap
+	// for a tighter, more percussive feel. Guard against bad/absent values.
+	const punchExponent = Number.isFinite(isochronicPunch) && isochronicPunch >= 1 ? isochronicPunch : 1;
 
 	const durationSec = Math.max(0.01, Number(length) || 0);
 	if (!sequence.length) throw new Error("Sequence is empty or invalid.");
@@ -133,7 +139,7 @@ async function generateAudio(options) {
 	const backgroundType = decodedNoiseBuffer ? 'custom music' : `${noiseType} noise`;
 	console.log(`--- Session config ---`);
 	console.log(`  Background: ${backgroundType}`);
-	console.log(`  Starting carrier: ${startingCarrier}Hz | Isochronic: ${muteIsochronic ? 'muted' : isochronicVolume} (carrier-tracked equal-loudness ×1.0–1.3)`);
+	console.log(`  Starting carrier: ${startingCarrier}Hz | Isochronic: ${muteIsochronic ? 'muted' : isochronicVolume} (carrier-tracked equal-loudness ×1.0–1.3, punch ^${punchExponent})`);
 	console.log(`  Binaural: ${useBinaural ? `on (${binauralVolume}, carrier-tracked)` : 'off'} | Main volume: ${mainVolume}`);
 	console.log(`  Duration: ${(durationSec / 60).toFixed(1)}min`);
 
@@ -265,7 +271,16 @@ async function generateAudio(options) {
 		oscGate.connect(isoLevel);
 
 		const firstFreq = sequence[0].frequency;
-		const lfo = new Tone.LFO({ frequency: firstFreq, min: 0, max: 1, type: "sine" }).connect(oscGate.gain);
+		const lfo = new Tone.LFO({ frequency: firstFreq, min: 0, max: 1, type: "sine" });
+		if (punchExponent === 1) {
+			lfo.connect(oscGate.gain);
+		} else {
+			// Sharpen the pulse: raise the 0..1 envelope to a power. Peak stays at 1
+			// (no clipping); stays C¹-continuous so no clicks / spectral splatter.
+			const punchShaper = new Tone.WaveShaper((x) => (x <= 0 ? 0 : Math.pow(x, punchExponent)), 2048);
+			lfo.connect(punchShaper);
+			punchShaper.connect(oscGate.gain);
+		}
 
 		// Binaural layer: fade/emphasis gain (0..1..emphasisFactor) -> carrier-tracked level gain
 		let binauralL, binauralR, panL, panR, binauralGain, binauralLevel;
