@@ -108,6 +108,7 @@ async function generateAudio(options) {
 		customNoiseVolume = null,
 		useBinaural = false,
 		binauralVolume: binauralVolumeBase = 0.16,
+		binauralCarrierOffset = 0,
 		isochronicVolume: isochronicVolumeBase = 0.35,
 		isochronicPunch = 1,
 		muteIsochronic = false
@@ -117,6 +118,16 @@ async function generateAudio(options) {
 	// 1 = original soft sine throb; >1 narrows each pulse and opens a silence gap
 	// for a tighter, more percussive feel. Guard against bad/absent values.
 	const punchExponent = Number.isFinite(isochronicPunch) && isochronicPunch >= 1 ? isochronicPunch : 1;
+
+	// Binaural carrier separation: offset (Hz) placing the binaural pair on its OWN
+	// base carrier = isochronic carrier + offset, instead of sharing it (C ± f/2).
+	// 0 = coupled (original). A large offset (e.g. 200 Hz) moves the within-ear
+	// difference between the isochronic carrier and the binaural carrier out of the
+	// entrainment range, eliminating the f/2 monaural beat, while keeping the
+	// binaural pair continuous (Δf = f preserved) and independently controllable.
+	// The offset tracks the carrier descent, so separation never collapses.
+	const binOffset = Number.isFinite(binauralCarrierOffset) && binauralCarrierOffset > 0 ? binauralCarrierOffset : 0;
+	const binBase = (carrier) => carrier + binOffset;
 
 	const durationSec = Math.max(0.01, Number(length) || 0);
 	if (!sequence.length) throw new Error("Sequence is empty or invalid.");
@@ -140,7 +151,7 @@ async function generateAudio(options) {
 	console.log(`--- Session config ---`);
 	console.log(`  Background: ${backgroundType}`);
 	console.log(`  Starting carrier: ${startingCarrier}Hz | Isochronic: ${muteIsochronic ? 'muted' : isochronicVolume} (carrier-tracked equal-loudness ×1.0–1.3, punch ^${punchExponent})`);
-	console.log(`  Binaural: ${useBinaural ? `on (${binauralVolume}, carrier-tracked)` : 'off'} | Main volume: ${mainVolume}`);
+	console.log(`  Binaural: ${useBinaural ? `on (${binauralVolume}, carrier-tracked${binOffset ? `, +${binOffset}Hz separated` : ', coupled C±f/2'})` : 'off'} | Main volume: ${mainVolume}`);
 	console.log(`  Duration: ${(durationSec / 60).toFixed(1)}min`);
 
 	// Choose channel count dynamically
@@ -286,15 +297,17 @@ async function generateAudio(options) {
 		let binauralL, binauralR, panL, panR, binauralGain, binauralLevel;
 		if (useBinaural && numChannels === 2) {
 			const firstBeatFreq = sequence[0].frequency;
-			// Symmetric carriers around C: L = C - f/2, R = C + f/2.
-			// Same Δf = f (identical binaural percept), but neither side equals the
-			// mono isochronic carrier C, so no unintended one-sided monaural beat.
-			binauralL = new Tone.Oscillator(initialCarrier - firstBeatFreq / 2, "sine");
-			binauralR = new Tone.Oscillator(initialCarrier + firstBeatFreq / 2, "sine");
+			// Symmetric carriers around the binaural base Cb: L = Cb - f/2, R = Cb + f/2.
+			// Cb = isochronic carrier + binOffset. With binOffset=0 this is the original
+			// coupled routing; with a separation offset, Cb sits out of band from the
+			// isochronic carrier so the f/2 monaural beat disappears. Δf = f either way.
+			const firstBinBase = binBase(initialCarrier);
+			binauralL = new Tone.Oscillator(firstBinBase - firstBeatFreq / 2, "sine");
+			binauralR = new Tone.Oscillator(firstBinBase + firstBeatFreq / 2, "sine");
 			panL = new Tone.Panner(-1);
 			panR = new Tone.Panner(1);
 			binauralGain = new Tone.Gain(0);
-			binauralLevel = new Tone.Gain(binauralVolume * equalLoudnessBoost(initialCarrier));
+			binauralLevel = new Tone.Gain(binauralVolume * equalLoudnessBoost(firstBinBase));
 			binauralL.connect(panL);
 			binauralR.connect(panR);
 			panL.connect(binauralGain);
@@ -346,18 +359,18 @@ async function generateAudio(options) {
 					lfo.frequency[rampFn](step.frequency, step.rampDuration, time);
 					if (step.carrierFreq) {
 						osc.frequency[rampFn](step.carrierFreq, step.rampDuration, time);
-						// Equal-loudness gains track the carrier descent
-						const boost = equalLoudnessBoost(step.carrierFreq);
-						isoLevel.gain[rampFn](isochronicVolume * boost, step.rampDuration, time);
+						// Equal-loudness gains track the carrier descent (binaural uses
+						// its own base carrier, which may be offset out of band).
+						isoLevel.gain[rampFn](isochronicVolume * equalLoudnessBoost(step.carrierFreq), step.rampDuration, time);
 						if (binauralLevel) {
-							binauralLevel.gain[rampFn](binauralVolume * boost, step.rampDuration, time);
+							binauralLevel.gain[rampFn](binauralVolume * equalLoudnessBoost(binBase(step.carrierFreq)), step.rampDuration, time);
 						}
 					}
 					if (binauralR) {
-						// Ramp both sides symmetrically around the carrier (C ± f/2)
-						// every step — the beat f changes per-step even when C does not.
-						binauralL.frequency[rampFn](stepCarrier - step.frequency / 2, step.rampDuration, time);
-						binauralR.frequency[rampFn](stepCarrier + step.frequency / 2, step.rampDuration, time);
+						// Ramp both sides symmetrically around the binaural base (Cb ± f/2)
+						// every step — the beat f changes per-step even when Cb does not.
+						binauralL.frequency[rampFn](binBase(stepCarrier) - step.frequency / 2, step.rampDuration, time);
+						binauralR.frequency[rampFn](binBase(stepCarrier) + step.frequency / 2, step.rampDuration, time);
 					}
 				}, currentTime);
 			} else if (step.carrierFreq) {
@@ -365,16 +378,15 @@ async function generateAudio(options) {
 				transport.schedule((time) => {
 					lfo.frequency.setValueAtTime(step.frequency, time);
 					osc.frequency.setValueAtTime(step.carrierFreq, time);
-					const boost = equalLoudnessBoost(step.carrierFreq);
-					isoLevel.gain.setValueAtTime(isochronicVolume * boost, time);
+					isoLevel.gain.setValueAtTime(isochronicVolume * equalLoudnessBoost(step.carrierFreq), time);
 					if (binauralLevel) {
-						binauralLevel.gain.setValueAtTime(binauralVolume * boost, time);
+						binauralLevel.gain.setValueAtTime(binauralVolume * equalLoudnessBoost(binBase(step.carrierFreq)), time);
 					}
 					if (binauralL) {
-						binauralL.frequency.setValueAtTime(step.carrierFreq - step.frequency / 2, time);
+						binauralL.frequency.setValueAtTime(binBase(step.carrierFreq) - step.frequency / 2, time);
 					}
 					if (binauralR) {
-						binauralR.frequency.setValueAtTime(step.carrierFreq + step.frequency / 2, time);
+						binauralR.frequency.setValueAtTime(binBase(step.carrierFreq) + step.frequency / 2, time);
 					}
 				}, currentTime);
 			}
