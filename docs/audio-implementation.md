@@ -187,6 +187,16 @@ After Tone.js renders the isochronic/binaural layers, custom music is mixed in b
 
 Final safety check: if the combined output exceeds 1.0 peak, scale everything down to 0.95 peak. Logs when this happens for diagnostics.
 
+## Sequence Validation
+
+Every step after the first must include a ramp duration > 0. The scheduler applies a step's frequency only through its ramp automation (or an explicit carrier change), so a non-initial step without a ramp would silently keep playing the previous step's frequency for its entire duration. `validateSequenceSteps` enforces this rule:
+
+- `generateAudio` throws on violation (backstop for any caller)
+- The single generator (`generate.js`) alerts with the offending step numbers before rendering
+- The bulk generator (`generate_bulk.js`) reports violations per configuration during pre-generation validation
+
+The first step is exempt — its frequency is baked in when the oscillators are created. All 72 shipped default-session sequences satisfy the rule (verified 2026-07).
+
 ## Diagnostics Logging
 
 Every session logs a detailed processing chain to the console:

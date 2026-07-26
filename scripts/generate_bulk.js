@@ -104,13 +104,16 @@ function validateJsonConfig() {
 			return;
 		}
 
-		// Check sequence duration
+		// Check sequence duration and step validity
 		try {
-			const { length } = parseSequence(sequenceData);
+			const { sequence: parsedSteps, length } = parseSequence(sequenceData);
 			const durationMinutes = length / 60;
 			if (Math.abs(durationMinutes - expectedDuration) > 0) {
 				errors.push(`Configuration ${index + 1} (${config.audioFile}): Sequence duration is ${durationMinutes.toFixed(1)} minutes, should be ${expectedDuration} minutes`);
 			}
+			validateSequenceSteps(parsedSteps).forEach(msg => {
+				errors.push(`Configuration ${index + 1} (${config.audioFile}): ${msg}`);
+			});
 		} catch (e) {
 			errors.push(`Configuration ${index + 1} (${config.audioFile}): Invalid sequence format`);
 		}

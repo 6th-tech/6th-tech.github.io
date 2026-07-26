@@ -86,6 +86,13 @@ async function start() {
 	playButton.disabled = true;
 	try {
 		initData();
+
+		const stepErrors = validateSequenceSteps(sequence);
+		if (stepErrors.length) {
+			alert("Invalid sequence:\n" + stepErrors.join("\n"));
+			return;
+		}
+
 		await maybeDecodeNoiseFile();
 
 		if (noiseFileInput.files.length > 0 && !isAudioFileLoaded) {

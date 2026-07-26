@@ -35,6 +35,23 @@ function parseSequence(sequenceText) {
 	return { sequence, length };
 }
 
+// --------- Sequence Validation ---------
+// Every step after the first must have a ramp duration > 0. The scheduler only
+// applies a step's frequency through its ramp (or an explicit carrier change),
+// so a non-initial step without one would silently keep playing the PREVIOUS
+// step's frequency for its whole duration. The first step needs no ramp — its
+// frequency is set when the oscillators are created.
+function validateSequenceSteps(sequence) {
+	const errors = [];
+	sequence.forEach((step, i) => {
+		if (i === 0) return;
+		if (!(Number.isFinite(step.rampDuration) && step.rampDuration > 0)) {
+			errors.push(`Step ${i + 1} (${step.frequency} Hz): missing ramp duration — every step after the first needs one (frequency,duration,rampDuration[,rampType[,carrier]])`);
+		}
+	});
+	return errors;
+}
+
 // --------- Audio File Decoding ---------
 async function decodeAudioFile(file) {
 	try {
@@ -131,6 +148,10 @@ async function generateAudio(options) {
 
 	const durationSec = Math.max(0.01, Number(length) || 0);
 	if (!sequence.length) throw new Error("Sequence is empty or invalid.");
+	const stepErrors = validateSequenceSteps(sequence);
+	if (stepErrors.length) {
+		throw new Error("Invalid sequence:\n" + stepErrors.join("\n"));
+	}
 
 	// Derive starting carrier from first step's carrier field
 	const startingCarrier = sequence[0].carrierFreq || 174;
