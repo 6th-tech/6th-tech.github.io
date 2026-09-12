@@ -359,4 +359,4 @@ node scripts/batch/regen-sessions.js \
 ./generate.sh "/Users/smanuel/Desktop/New Sessions6"   # FLAC + ALAC next to each WAV
 ```
 
-Defaults match the shipped default-session renders (binaural on with +150 Hz carrier separation, isochronic 0.35, punch 1, background 0.5, main 0.7, 12 dB carrier dip, 48 kHz stereo 16-bit); every value has a flag. Complete files are skipped, so a run can be restarted. The pre-flight verdict for each music-backed session is printed with the render line.
+Defaults match the shipped default-session renders (binaural on with +150 Hz carrier separation, isochronic 0.35, punch 2, background 0.5, main 0.7, 12 dB carrier dip, 48 kHz stereo 16-bit — the punch and binaural settings were read back from the shipped renders' sideband ratios); every value has a flag. Complete files are skipped, so a run can be restarted. The pre-flight verdict for each music-backed session is printed with the render line.
