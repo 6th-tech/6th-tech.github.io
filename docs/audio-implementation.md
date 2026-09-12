@@ -153,7 +153,7 @@ The `binauralCarrierOffset` option (Hz, default 0) moves the binaural pair onto 
 - **0** (default): coupled routing — unchanged, bit-identical output.
 - **>0** (e.g. 150–250): the within-ear difference between the isochronic carrier C and the binaural carrier Cb is now the offset (well out of the entrainment range and beyond a critical band), so the f/2 monaural beat disappears. The binaural difference Δf = f is unchanged, the pair stays **continuous** (unlike enveloping both carriers, which would break the binaural percept), and it remains independently controllable — so the SI-DO emphasis still applies. The offset tracks the carrier descent, so separation never collapses and the carriers never cross.
 
-Numerically verified: the f/2 component in the within-ear envelope drops from 0.064 (coupled) to 0 (separated), while the isochronic pulse at f is preserved. The dropdown in both generator UIs exposes Off / 150 / 250 Hz. No effect without headphones (binaural requires channel separation).
+Numerically verified: the f/2 component in the within-ear envelope drops from 0.064 (coupled) to 0 (separated), while the isochronic pulse at f is preserved. The dropdown in both generator UIs exposes Off / 150 / 250 Hz and defaults to +150 Hz, the setting the shipped default sessions were rendered with (the `binauralCarrierOffset` option itself still defaults to 0 for callers that omit it). No effect without headphones (binaural requires channel separation).
 
 ### 1g. Carrier-Tracking Dip
 
