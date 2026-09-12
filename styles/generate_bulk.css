@@ -202,3 +202,14 @@ code {
 	font-weight: bold;
 	margin: 10px 0;
 }
+
+/* Pre-flight background analysis result (shown under each generated file) */
+.warning-message {
+	color: #b26a00;
+}
+
+.preflight {
+	flex-basis: 100%;
+	font-size: 0.85em;
+	margin-top: 4px;
+}

@@ -72,6 +72,22 @@
 		</div>
 
 		<div class="input-section">
+			<label for="carrierDipDb">Carrier Dip (dB):</label>
+			<input type="number" id="carrierDipDb" value="12" min="0" max="24" step="1" />
+			<div class="help-text">
+				Cut carved out of the background around the isochronic carrier (one auditory band wide, follows the carrier ramps) so the tone is never masked. 0 disables.
+			</div>
+		</div>
+
+		<div class="input-section">
+			<label for="preflight">Pre-flight background analysis:</label>
+			<input type="checkbox" id="preflight" checked />
+			<div class="help-text">
+				Checks each custom background against its session (masking, spurious beats, rhythm, level) before rendering and reports it next to the file.
+			</div>
+		</div>
+
+		<div class="input-section">
 			<label for="muteIsochronic">Mute Isochronic Tones:</label>
 			<input type="checkbox" id="muteIsochronic" />
 		</div>
@@ -120,14 +136,15 @@
 			<div class="rules">
 				<h4>Generation Rules:</h4>
 				<ul>
-					<li>When backgroundSound is "white", "pink", or "brown": noise modulation is enabled</li>
-					<li>When backgroundSound is an MP3 file: noise file volume is set to 0.2 and fade in/out is enabled</li>
-					<li>All other settings are automatically configured based on these rules</li>
+					<li>When backgroundSound is "white", "pink", or "brown": the noise is rendered with the slow 2–15 kHz lowpass sweep (8-minute cycle)</li>
+					<li>When backgroundSound is an audio file: the file is looped for the session length and the pre-flight analysis reports how it interacts with the session's carriers</li>
+					<li>Either way the background is normalised to the Background Sound Volume (active RMS), limited, and gets the carrier dip; every other setting comes from the fields above</li>
 				</ul>
 			</div>
 		</div>
 		
 		<script type="text/javascript" src="./scripts/audio-core.js"></script>
+		<script type="text/javascript" src="./scripts/audio-analysis.js"></script>
 		<script type="text/javascript" src="./scripts/generate_bulk.js"></script>
 	</body>
 </html>

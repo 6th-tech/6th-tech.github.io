@@ -96,6 +96,23 @@
 			</div>
 
 			<div class="form-group">
+				<label for="carrierDipDb">Carrier Dip (dB):</label>
+				<input type="number" id="carrierDipDb" value="12" min="0" max="24" step="1" />
+				<div class="help-text">
+					Cut carved out of the background around the isochronic carrier (one auditory band wide, follows the carrier ramps) so the tone is never masked. 0 disables.
+				</div>
+			</div>
+
+			<div class="form-group">
+				<label for="preflight">Pre-flight background analysis:</label>
+				<input type="checkbox" id="preflight" checked />
+				<div class="help-text">
+					Checks the custom background file against the sequence (masking, spurious beats, rhythm, level) before rendering.
+				</div>
+				<div id="preflightResult" class="help-text"></div>
+			</div>
+
+			<div class="form-group">
 				<label for="muteIsochronic">Mute Isochronic Tones:</label>
 				<input type="checkbox" id="muteIsochronic" />
 				<div class="help-text">
@@ -153,6 +170,7 @@
 		</div>
 
 		<script type="text/javascript" src="./scripts/audio-core.js"></script>
+		<script type="text/javascript" src="./scripts/audio-analysis.js"></script>
 		<script type="text/javascript" src="./scripts/generate.js"></script>
 	</body>
 </html>

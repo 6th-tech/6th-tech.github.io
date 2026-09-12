@@ -13,6 +13,8 @@ const useBinauralCheckbox = document.querySelector("#useBinaural");
 const isochronicVolumeInput = document.querySelector("#isochronicVolume");
 const isochronicPunchInput = document.querySelector("#isochronicPunch");
 const binauralCarrierOffsetInput = document.querySelector("#binauralCarrierOffset");
+const carrierDipInput = document.querySelector("#carrierDipDb");
+const preflightCheckbox = document.querySelector("#preflight");
 const muteIsochronicCheckbox = document.querySelector("#muteIsochronic");
 const alwaysMonoCheckbox = document.querySelector("#alwaysMono");
 const generateButton = document.querySelector("#generateButton");
@@ -177,7 +179,25 @@ async function generateSingleAudio(config, index) {
 			decodedNoiseBuffer = await decodeAudioFile(audioFile);
 			noiseType = 'custom';
 		}
-		
+
+		const carrierDipDb = parseFloat(carrierDipInput.value);
+
+		// Pre-flight: measure how this background interacts with the session's carriers
+		let preflightHtml = '';
+		if (decodedNoiseBuffer && preflightCheckbox.checked) {
+			const report = AudioAnalysis.analyzeBackground(decodedNoiseBuffer, parsedSequence, {
+				targetVolume: rules.customNoiseVolume,
+				isochronicVolume: parseFloat(isochronicVolumeInput.value),
+				useBinaural: useBinauralCheckbox.checked,
+				binauralCarrierOffset: parseFloat(binauralCarrierOffsetInput.value),
+				carrierDipDb
+			});
+			console.log(`  Pre-flight: ${report.summary}`);
+			report.lines.forEach(l => console.log(`    ${l}`));
+			const cls = report.severity === 'real' ? 'error-message' : (report.severity === 'mild' ? 'warning-message' : 'success-message');
+			preflightHtml = `<div class="${cls} preflight">${report.summary}</div>`;
+		}
+
 		// Generate audio
 		const audioOptions = {
 			sequence: parsedSequence,
@@ -193,20 +213,22 @@ async function generateSingleAudio(config, index) {
 			binauralCarrierOffset: parseFloat(binauralCarrierOffsetInput.value),
 			isochronicVolume: parseFloat(isochronicVolumeInput.value),
 			isochronicPunch: parseFloat(isochronicPunchInput.value),
-			muteIsochronic: muteIsochronicCheckbox.checked
+			muteIsochronic: muteIsochronicCheckbox.checked,
+			carrierDipDb
 		};
-		
+
 		const audioBuffer = await generateAudio(audioOptions);
 
 		// Generate filename and download
 		const fileName = isShortSession ? `${config.audioFile}.short.wav` : `${config.audioFile}.wav`;
 		downloadWav(audioBuffer, fileName);
-		
+
 		// Update UI
 		downloadItem.className = 'download-item completed';
 		downloadItem.innerHTML = `
 			<span>${audioFile} (${backgroundSound})</span>
 			<span class="success-message">&#10003; Generated: ${fileName}</span>
+			${preflightHtml}
 		`;
 		
 		return true;

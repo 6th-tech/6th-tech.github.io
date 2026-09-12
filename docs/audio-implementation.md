@@ -12,23 +12,30 @@ Sessions combine up to four audio layers:
 3. **Background** — either built-in noise (white/pink/brown) or custom music file
 4. **Master envelope** — fade in/out applied to all layers
 
-Tone.js v15.1.22 renders layers 1, 2, and (for noise sessions) 3 via `Tone.Offline`. Custom music is mixed in **after** Tone.js rendering using direct sample-by-sample math — this was a critical design decision (see [Why Not Tone.js Player](#why-not-tonejs-player)).
+Tone.js v15.1.22 renders layers 1 and 2 via `Tone.Offline`. The background — custom music **or** built-in noise (rendered up front by a second, tones-free `Tone.Offline`) — goes through one shared chain (active-RMS normalisation → true-peak limiter → carrier-tracking dip) and is mixed in **after** the tone render using direct sample-by-sample math — this was a critical design decision (see [Why Not Tone.js Player](#why-not-tonejs-player)).
+
+A **pre-flight analyzer** (`scripts/audio-analysis.js`, offline twin `scripts/analysis/analyze_bg.py`) measures how a background interacts with a session's carriers before rendering — see [Pre-flight Background Analysis](#1h-pre-flight-background-analysis).
 
 ## Signal Flow
 
-### Custom Music Sessions
+### All Sessions (custom music or built-in noise)
 
 ```
-Source file
+Background source
+  │  custom music: the decoded file
+  │  noise: Tone.Offline renders white/pink/brown for the session length,
+  │         optionally through a 2–15 kHz lowpass sweep (8-minute cycle)
   │
-  ├─ RMS normalization (target = customNoiseVolume or 0.5)
-  │    └─ Scale factor capped at 4x to prevent extreme amplification
+  ├─ Active-RMS normalization (target = customNoiseVolume or 0.5)
+  │    └─ Reference is the RMS of the *sounding* samples (|x| > 0.01), so sparse or
+  │       quietly mastered recordings (rain, streams, birds at RMS ≈ 0.01) reach the
+  │       same level as dense ones. Scale capped at 40x (guard only).
   │
-  ├─ Isochronic volume boost (up to 30% for loud backgrounds)
-  │    └─ Gradual ramp based on active RMS (0.10–0.20)
+  ├─ Isochronic volume boost (custom music only, up to 30% for loudly mastered sources)
+  │    └─ Gradual ramp based on the source's active RMS (0.10–0.20)
   │
   ├─ True peak limiter (ceiling = 0.85, look-ahead = 10ms)
-  │    └─ Only activates if scaled peak > 0.85
+  │    └─ Only activates if scaled peak > 0.85; logs how hard it worked
   │
   ├─ Safety ceiling (peak ≤ 0.95)
   │    └─ Simple linear scaling if peak still exceeds 0.95
@@ -36,51 +43,46 @@ Source file
   ├─ Loop boundary fades (3s fade in at start, 3s fade out at end)
   │    └─ Baked into the buffer for click-free looping
   │
-  ├─ Tone.js Offline renders isochronic + binaural (NO music)
+  ├─ Tone.js Offline renders isochronic + binaural (NO background)
   │
-  ├─ Direct math mixing: music samples added to Tone.js output
+  ├─ Session-length background track (loop + linear-interpolation resampling)
+  │
+  ├─ Carrier-tracking dip (−12 dB, one ERB wide, follows the carrier ramps)
+  │    └─ Web Audio peaking BiquadFilter with frequency/Q automation; second dip on
+  │       the separated binaural base carrier when carrier separation is on
+  │
+  ├─ Direct math mixing: background samples added to the tone render
   │    └─ Master fade envelope applied per-sample
-  │    └─ Linear interpolation for sample rate conversion
   │
   └─ Post-render normalization (scale to 0.95 if peak > 1.0)
-```
-
-### Noise Sessions
-
-```
-Tone.js Offline renders everything:
-  ├─ Isochronic tones (carrier + LFO gate)
-  ├─ Binaural beats (optional stereo pair)
-  ├─ Built-in noise (white/pink/brown at 0.5 volume)
-  │    └─ Optional AutoFilter modulation (8-minute cycle)
-  └─ Master fade envelope
-       └─ Post-render normalization (if needed)
 ```
 
 ## Signal Levels
 
 | Component | Level | Notes |
 |-----------|-------|-------|
-| Isochronic tones | 0.35 base | ×1.0–1.3 carrier-tracked equal-loudness; up to +30% for loud backgrounds; optional pulse-punch shaping |
+| Isochronic tones | 0.35 base | ×1.0–1.3 carrier-tracked equal-loudness; up to +30% for loudly mastered music; optional pulse-punch shaping |
 | Binaural beats | 0.16 base | Per-channel, stereo panned L/R; ×1.0–1.3 carrier-tracked; ×1.4 during SI-DO emphasis; optional carrier separation |
-| Background noise | 0.70 | `defaultNoiseVolume` — higher than music to match perceived loudness |
-| Custom music | 0.50 | Target RMS after normalization |
+| Background (music or noise) | 0.50 | Target *active* RMS after normalization — same chain for both |
+| Carrier dip | −12 dB | One ERB wide, centred on the carrier, tracks the carrier ramps (`carrierDipDb`, 0 = off) |
 | Master gain | 0.70 | `mainVolume`, capped at 0.89 headroom |
 | Fade in/out | 10s each | Linear ramp on master gain |
 | Final buffer | 3s | Silence at end after fade-out |
 
 ## Key Processing Steps
 
-### 1. RMS Normalization
+### 1. Active-RMS Normalization
 
-Scales custom music so that all sources reach the same target perceived loudness (RMS = 0.5 by default), rather than matching peaks. This ensures a quiet track with low peaks and a loud track with high peaks both sound equally loud in the final mix.
+Scales the background so that all sources reach the same target perceived loudness (active RMS = 0.5 by default), rather than matching peaks. The reference is the **active RMS** — the RMS of samples above the 0.01 silence threshold — not the global RMS. Nature recordings (rain, streams, birds) are often mastered near RMS 0.01 with 20–30% of samples above the threshold; global-RMS normalization with the old 4x cap left them at 0.03–0.05 in the mix, i.e. 20–50 dB below the tone instead of the intended balance. Active-RMS normalization brings them to ≈0.3 while dense music still lands at 0.5.
 
-**Scale cap**: Limited to 4x maximum. Some nature sound files (birds, ocean, chimes) have very low global RMS due to silences between sounds. Without the cap, these would be amplified 10-20x, causing massive peak overshoot and artifacts.
+**Scale cap**: 40x, a guard against pathological files only. Peaks are handled by the limiter, which now logs the percentage of samples reduced and the mean/max reduction so heavy limiting is visible in the console.
 
 ```
-rmsScale = targetVolume / musicRms
-scale = min(rmsScale, 4)
+rmsScale = targetVolume / activeRms
+scale = min(rmsScale, 40)
 ```
+
+Built-in noise goes through exactly the same chain (it is rendered up front by a tones-free `Tone.Offline`), so noise sessions and music sessions share one loudness rule. Previously the noise sat inside the tone render at a fixed 0.7 gain and, because of the AutoFilter misconfiguration described in 1i, ended up at 0.065–0.10 RMS — quieter than the tone.
 
 ### 1b. Carrier Frequency Compensation
 
@@ -120,7 +122,7 @@ The factor is capped so emphasized binaural never exceeds 0.65× the isochronic 
 
 ### 1c. Isochronic Volume Boost for Loud Backgrounds
 
-For custom music sessions, if the source file's active RMS exceeds 0.15, the isochronic tone volume is gradually increased so the tones don't get buried under loud background audio. The boost ramps linearly:
+For custom music sessions, if the *source file's* active RMS exceeds 0.10, the isochronic tone volume is gradually increased so the tones don't get buried under loud background audio. (Since the carrier dip now guarantees the tone's band is clear, this boost is a secondary safeguard; it is keyed to the source's mastering level, not to the post-normalization level.) The boost ramps linearly:
 
 - **No boost** when active RMS ≤ 0.10 (quiet or sparse sources)
 - **Gradual ramp** from 0% to 30% as active RMS goes from 0.10 to 0.20
@@ -152,6 +154,35 @@ The `binauralCarrierOffset` option (Hz, default 0) moves the binaural pair onto 
 - **>0** (e.g. 150–250): the within-ear difference between the isochronic carrier C and the binaural carrier Cb is now the offset (well out of the entrainment range and beyond a critical band), so the f/2 monaural beat disappears. The binaural difference Δf = f is unchanged, the pair stays **continuous** (unlike enveloping both carriers, which would break the binaural percept), and it remains independently controllable — so the SI-DO emphasis still applies. The offset tracks the carrier descent, so separation never collapses and the carriers never cross.
 
 Numerically verified: the f/2 component in the within-ear envelope drops from 0.064 (coupled) to 0 (separated), while the isochronic pulse at f is preserved. The dropdown in both generator UIs exposes Off / 150 / 250 Hz. No effect without headphones (binaural requires channel separation).
+
+### 1g. Carrier-Tracking Dip
+
+Why it exists: an audit of the 31 music-backed default sessions (2026-09) showed that RMS normalization cannot see *where* a background's energy sits. Pads, piano and vocals put most of theirs at 150–950 Hz — exactly the carrier range — while rain and waves put theirs elsewhere, so at equal RMS the former masked the isochronic tone inside its own auditory band for up to 64% of a session and sustained notes within ±40 Hz of the carrier produced spurious monaural beats. Boosting the tone cannot fix this without making it dominate the mix; carving the background out of the tone's band can.
+
+The dip is a Web Audio `BiquadFilterNode` of type `peaking` with gain `-carrierDipDb` (default **12 dB**) and `Q = C / ERB(C)`, i.e. one equivalent-rectangular-bandwidth wide (43 Hz at 174 Hz, 82 Hz at 528 Hz, 117 Hz at 852 Hz). Its `frequency` and `Q` AudioParams are automated with the same linear/exponential ramps and the same step times the isochronic carrier follows, so the notch glides with the carrier through the session. It is applied to the session-length background track (after looping/resampling, before the master fade), for music and noise alike. With binaural carrier separation on, a second dip follows the binaural base carrier (`C + offset`).
+
+Measured effect on the audited sessions (normalization fix + 12 dB dip): isochronic masking real problems fell from 15 sessions to 10 — the remaining ten were replaced with nature recordings — and binaural masking problems fell from 8 to 0. A 1-ERB cut at −12 dB is subtle in ambient material; set `carrierDipDb` to 0 to reproduce the previous mix.
+
+### 1h. Pre-flight Background Analysis
+
+`scripts/audio-analysis.js` exposes `AudioAnalysis.analyzeBackground(buffer, sequence, options)`. It mirrors the generator's gain staging (active-RMS normalization, isochronic boost, equal-loudness, the dip) and then measures, inside one ERB around every carrier the sequence uses:
+
+| Metric | What it catches | Real problem when |
+|---|---|---|
+| masking % | background louder than the tone in its own band | ≥ 20% of session time (mild ≥ 5%) |
+| spurious beats % | sustained spectral line within ±40 Hz of the carrier at tone level | ≥ 10% of frames (mild ≥ 3%) |
+| rhythm | in-band amplitude modulation at the session's own beat frequencies (≥ 15% depth, background within 20 dB of the tone) | any |
+| tempo | broadband modulation peak 0.5–8 Hz ≥ 30% depth | mild |
+| level | mix RMS after normalization | mild when < 0.15 |
+| binaural | same masking test against the binaural level; L/R correlation in band | masked ≥ 40% (mild ≥ 15%); corr < 0.3 |
+
+Both generator pages run it automatically (checkbox "Pre-flight background analysis"): the single generator prints the verdict under the checkbox, the bulk generator prints it next to each generated file and logs per-carrier detail to the console. The offline Python twin (`scripts/analysis/analyze_bg.py`, `verify.py`) computes the same metrics for a folder of candidates against `default_sessions.json` — use it to vet new recordings before downloading a whole set.
+
+Selection rules that follow from the metrics: no sustained pitch between 150 and 950 Hz (no drones, pads, bowls, chimes, flute, piano, vocals in that register); no tempo (drums, arpeggios, pulsing synths); broadband textures (rain, wind, stream, surf, fire) pass by construction; centred stereo for binaural sessions; mastered at a sane level (RMS > 0.05, mostly active) so normalization stays moderate.
+
+### 1i. Noise Sessions: AutoFilter Sweep
+
+The "modulated noise" option is a `Tone.AutoFilter` lowpass sweep. Two Tone.js pitfalls shaped the previous behaviour: `AutoFilter` reads only `frequency`, `baseFrequency`, `octaves` and `filter`, so the `min`/`max`/`Q` options that used to be passed were ignored (it swept its defaults, 200 → 1212 Hz, straight across the carrier range), and the rate `"8m"` means eight *measures* in Tone's notation — 16 s at the default 120 BPM — not eight minutes. Both were confirmed by inspecting the live object in a headless render. The filter is now created with `frequency: 1/480`, `baseFrequency: 2000`, `octaves: log2(15000/2000)` and `filter: { type: "lowpass", rolloff: -12, Q: 0.5 }`, i.e. the intended 2–15 kHz sweep with one full cycle every 8 minutes. The noise then goes through the shared background chain above.
 
 ### 2. True Peak Limiter
 
@@ -267,9 +298,10 @@ Every session logs a detailed processing chain to the console:
 | `fadeOut` | 10s | Session fade-out duration |
 | `noiseFade` | 3s | Loop boundary fade duration |
 | `finalBuffer` | 3s | Silence appended after fade-out |
-| `defaultBackgroundVolume` | 0.5 | RMS target for custom music normalization |
-| `defaultNoiseVolume` | 0.7 | Gain for built-in noise (higher to match music loudness) |
-| `maxScale` | 4 | Maximum RMS normalization multiplier |
+| `defaultBackgroundVolume` | 0.5 | Active-RMS target for background normalization (music and noise) |
+| `defaultNoiseVolume` | 0.7 | Legacy; no longer used for level (noise is normalized like music) |
+| `maxNormalisationScale` | 40 | Maximum active-RMS normalization multiplier |
+| `defaultCarrierDipDb` | 12 | Depth of the carrier-tracking dip (dB); 0 disables |
 | Limiter ceiling | 0.85 | Maximum peak after limiting |
 | Safety ceiling | 0.95 | Absolute maximum before Tone.js mix |
 | Headroom cap | 0.89 | Master gain never exceeds this |
@@ -309,6 +341,22 @@ Commit: `ed97c93 - Lower default isochronic tone volume to 0.35 based on researc
 
 ## Known Behaviors
 
-- **Sparse nature sounds**: Files with large silent gaps (birds, ocean waves, wind chimes) may have very low global RMS but sound fine. The 4x scale cap prevents over-amplification. Active RMS logging helps identify these sources.
+- **Sparse nature sounds**: Files with large silent gaps (birds, ocean waves, campfire) have very low global RMS. Normalization is keyed to their active RMS, so the sounding parts reach the target level while the gaps stay quiet; the limiter absorbs the transients and logs how hard it worked. Files that are almost entirely below the silence threshold (a few percent active) still end up quiet — the pre-flight analysis flags them.
 - **Sample rate conversion**: Music files at different sample rates than the output (typically 44100 Hz) are handled via linear interpolation during mixing. No resampling step needed.
 - **Mono music → stereo output**: When binaural beats are enabled (stereo output) but the music file is mono, the mono channel is duplicated to both output channels.
+
+---
+
+## Batch Regeneration (headless)
+
+`scripts/batch/regen-sessions.js` renders every session of a sessions JSON with the same `generateAudio()` the pages use, in a headless Chromium driven through playwright-core, and writes `<audioFile>.wav` + `<audioFile>.short.wav`. It serves the repo and the sound folders itself, so nothing needs to be uploaded through the bulk page:
+
+```bash
+node scripts/batch/regen-sessions.js \
+  --sessions ../sixth/sixth-mind/assets/default_sessions.json \
+  --sounds "/Users/smanuel/Desktop/Used Sounds - Replacements,/Users/smanuel/Desktop/Used Sounds" \
+  --out "/Users/smanuel/Desktop/New Sessions6"
+./generate.sh "/Users/smanuel/Desktop/New Sessions6"   # FLAC + ALAC next to each WAV
+```
+
+Defaults match the shipped default-session renders (binaural on with +150 Hz carrier separation, isochronic 0.35, punch 1, background 0.5, main 0.7, 12 dB carrier dip, 48 kHz stereo 16-bit); every value has a flag. Complete files are skipped, so a run can be restarted. The pre-flight verdict for each music-backed session is printed with the render line.

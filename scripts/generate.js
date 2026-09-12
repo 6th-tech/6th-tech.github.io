@@ -69,10 +69,29 @@ async function renderOfflineToBuffer() {
 		binauralCarrierOffset: parseFloat(document.getElementById("binauralCarrierOffset").value),
 		isochronicVolume: parseFloat(document.getElementById("isochronicVolume").value),
 		isochronicPunch: parseFloat(document.getElementById("isochronicPunch").value),
-		muteIsochronic: muteIsochronicCheckbox.checked
+		muteIsochronic: muteIsochronicCheckbox.checked,
+		carrierDipDb: parseFloat(document.getElementById("carrierDipDb").value)
 	};
-	
+
 	return await generateAudio(audioOptions);
+}
+
+// --------- Pre-flight background analysis ---------
+function runPreflight() {
+	const resultEl = document.getElementById("preflightResult");
+	resultEl.textContent = "";
+	if (!decodedNoiseBuffer || !document.getElementById("preflight").checked) return;
+	const report = AudioAnalysis.analyzeBackground(decodedNoiseBuffer, sequence, {
+		targetVolume: parseFloat(document.getElementById("noiseVolume").value),
+		isochronicVolume: parseFloat(document.getElementById("isochronicVolume").value),
+		useBinaural: useBinauralCheckbox.checked,
+		binauralCarrierOffset: parseFloat(document.getElementById("binauralCarrierOffset").value),
+		carrierDipDb: parseFloat(document.getElementById("carrierDipDb").value)
+	});
+	console.log(`  Pre-flight: ${report.summary}`);
+	report.lines.forEach(l => console.log(`    ${l}`));
+	resultEl.textContent = `Pre-flight: ${report.summary}`;
+	resultEl.style.color = report.severity === 'real' ? '#c62828' : (report.severity === 'mild' ? '#b26a00' : '#2e7d32');
 }
 
 function downloadWavFromUI(buffer) {
@@ -99,6 +118,8 @@ async function start() {
 			alert("Could not decode the selected noise file.");
 			return;
 		}
+
+		runPreflight();
 
 		const buffer = await renderOfflineToBuffer();
 		downloadWavFromUI(buffer);

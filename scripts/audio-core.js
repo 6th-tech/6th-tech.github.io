@@ -8,7 +8,9 @@ const fadeOut = 10; // sec
 const noiseFade = 3; // sec
 const finalBuffer = 3; // sec
 const defaultBackgroundVolume = 0.5;
-const defaultNoiseVolume = 0.7;
+const defaultNoiseVolume = 0.7; // legacy: built-in noise now goes through the same normalisation as music
+const defaultCarrierDipDb = 12;      // dB carved out of the background around the carrier (one ERB wide)
+const maxNormalisationScale = 40;   // cap on active-RMS normalisation gain (was 4 on global RMS)
 
 // --------- Parsing Functions ---------
 function parseSequence(sequenceText) {
@@ -111,6 +113,118 @@ function writeString(view, offset, str) {
 	for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
 }
 
+// --------- Background Helpers ---------
+
+// Equivalent rectangular bandwidth (Glasberg & Moore) of the auditory filter at
+// frequency f. Everything "in-band" in this file means "inside one ERB".
+function erbWidth(f) {
+	return 24.7 * (4.37 * f / 1000 + 1);
+}
+
+// Render the built-in noise (white/pink/brown) into a plain AudioBuffer so it can
+// go through exactly the same background chain as a custom music file
+// (normalisation -> limiter -> carrier dip -> mix). Previously the noise lived
+// inside the tone render at a fixed gain, which left it far quieter than music.
+async function renderNoiseBackground(noiseType, useNoiseModulation, durationSec, numChannels, sampleRate) {
+	const rendered = await Tone.Offline(() => {
+		const out = new Tone.Gain(1).toDestination();
+		let filter = null;
+		if (useNoiseModulation) {
+			// Slow lowpass sweep 2000 Hz -> 15000 Hz and back, one full cycle every
+			// 8 minutes. NOTE: Tone.AutoFilter only reads frequency / baseFrequency /
+			// octaves / filter — the previous `min/max/Q` options were silently
+			// ignored (it swept 200–1212 Hz), and "8m" meant 8 *measures* (16 s).
+			filter = new Tone.AutoFilter({
+				frequency: 1 / 480,
+				baseFrequency: 2000,
+				octaves: Math.log2(15000 / 2000),
+				filter: { type: "lowpass", rolloff: -12, Q: 0.5 }
+			}).connect(out);
+			filter.start(0);
+		}
+		const noise = new Tone.Noise(noiseType.toLowerCase()).connect(filter || out);
+		noise.start(0);
+	}, durationSec, numChannels, sampleRate || Tone.getContext().sampleRate);
+	return rendered;
+}
+
+// Loop / resample the (already normalised) background into a session-length
+// track with the same sample rate and channel count as the tone render.
+function buildBackgroundTrack(source, outSampleRate, outLength, outChannels) {
+	const ctx = new OfflineAudioContext(outChannels, outLength, outSampleRate);
+	const track = ctx.createBuffer(outChannels, outLength, outSampleRate);
+	const musicSR = source.sampleRate;
+	const musicLen = source.length;
+	const musicChannels = source.numberOfChannels;
+	for (let ch = 0; ch < outChannels; ch++) {
+		const src = source.getChannelData(ch < musicChannels ? ch : 0); // mono -> both channels
+		const dst = track.getChannelData(ch);
+		for (let i = 0; i < outLength; i++) {
+			// Linear interpolation handles sample-rate conversion; modulo wraps the loop
+			const pos = (i * musicSR / outSampleRate) % musicLen;
+			const idx0 = Math.floor(pos);
+			const idx1 = (idx0 + 1) % musicLen;
+			const frac = pos - idx0;
+			dst[i] = src[idx0] * (1 - frac) + src[idx1] * frac;
+		}
+	}
+	return track;
+}
+
+// Carrier-tracking dip: a peaking-EQ cut of `dipDb`, one ERB wide, centred on the
+// isochronic carrier and automated with the SAME ramps the carrier follows
+// through the session. It carves the tone's own band out of the background so
+// the tone is never masked and sustained notes near the carrier cannot beat
+// against it. `offsets` adds further dips at carrier+offset (used for the
+// separated binaural base carrier).
+async function applyCarrierDip(track, sequence, startingCarrier, dipDb, offsets) {
+	const ctx = new OfflineAudioContext(track.numberOfChannels, track.length, track.sampleRate);
+	const source = ctx.createBufferSource();
+	source.buffer = track;
+	const centres = [0].concat(offsets || []);
+	let node = source;
+	const filters = centres.map(off => {
+		const f = ctx.createBiquadFilter();
+		f.type = "peaking";
+		f.gain.value = -Math.abs(dipDb);
+		node.connect(f);
+		node = f;
+		return { f, off };
+	});
+	node.connect(ctx.destination);
+
+	const qFor = c => c / erbWidth(c);
+	const setAt = (t, c) => filters.forEach(({ f, off }) => {
+		f.frequency.setValueAtTime(c + off, t);
+		f.Q.setValueAtTime(qFor(c + off), t);
+	});
+	const rampTo = (t0, from, to, dur, exponential) => filters.forEach(({ f, off }) => {
+		const fn = exponential ? "exponentialRampToValueAtTime" : "linearRampToValueAtTime";
+		f.frequency.setValueAtTime(from + off, t0);
+		f.Q.setValueAtTime(qFor(from + off), t0);
+		f.frequency[fn](to + off, t0 + dur);
+		f.Q[fn](qFor(to + off), t0 + dur);
+	});
+
+	setAt(0, startingCarrier);
+	let t = 0;
+	let current = startingCarrier;
+	sequence.forEach(step => {
+		if (step.carrierFreq && step.carrierFreq !== current) {
+			if (step.rampDuration) {
+				rampTo(t, current, step.carrierFreq, step.rampDuration, step.rampType === 1);
+			} else {
+				setAt(t, step.carrierFreq);
+			}
+			current = step.carrierFreq;
+		}
+		t += step.duration + (step.rampDuration || 0);
+	});
+
+	source.start(0);
+	return await ctx.startRendering();
+}
+
 // --------- Core Audio Generation Function ---------
 async function generateAudio(options) {
 	const {
@@ -128,8 +242,14 @@ async function generateAudio(options) {
 		binauralCarrierOffset = 0,
 		isochronicVolume: isochronicVolumeBase = 0.35,
 		isochronicPunch = 1,
-		muteIsochronic = false
+		muteIsochronic = false,
+		carrierDipDb = defaultCarrierDipDb,
+		outputSampleRate = null
 	} = options;
+
+	// Output sample rate: defaults to the browser's audio context rate (44.1 kHz on
+	// most machines, 48 kHz on some). Pass explicitly for reproducible batch output.
+	const outSampleRate = Number.isFinite(outputSampleRate) && outputSampleRate > 0 ? outputSampleRate : Tone.getContext().sampleRate;
 
 	// Isochronic "punch": exponent applied to the 0..1 pulse envelope.
 	// 1 = original soft sine throb; >1 narrows each pulse and opens a silence gap
@@ -145,6 +265,9 @@ async function generateAudio(options) {
 	// The offset tracks the carrier descent, so separation never collapses.
 	const binOffset = Number.isFinite(binauralCarrierOffset) && binauralCarrierOffset > 0 ? binauralCarrierOffset : 0;
 	const binBase = (carrier) => carrier + binOffset;
+
+	// Carrier dip depth (dB) carved out of the background around the carrier. 0 = off.
+	const dipDb = Number.isFinite(carrierDipDb) && carrierDipDb > 0 ? carrierDipDb : 0;
 
 	const durationSec = Math.max(0.01, Number(length) || 0);
 	if (!sequence.length) throw new Error("Sequence is empty or invalid.");
@@ -167,88 +290,98 @@ async function generateAudio(options) {
 	// sit in the same low range and would otherwise be masked by the background).
 	const equalLoudnessBoost = (carrier) => carrier < 400 ? 1 + 0.30 * (1 - carrier / 400) : 1;
 
+	// Choose channel count dynamically
+	const numChannels = alwaysMono ? 1 : (useBinaural ? 2 : (decodedNoiseBuffer && decodedNoiseBuffer.numberOfChannels > 1 ? 2 : 1));
+
 	// Session details log
-	const backgroundType = decodedNoiseBuffer ? 'custom music' : `${noiseType} noise`;
+	const isCustomMusic = !!decodedNoiseBuffer;
+	const backgroundType = isCustomMusic ? 'custom music' : `${noiseType} noise${useNoiseModulation ? ' (2–15 kHz lowpass sweep, 8 min cycle)' : ''}`;
 	console.log(`--- Session config ---`);
 	console.log(`  Background: ${backgroundType}`);
 	console.log(`  Starting carrier: ${startingCarrier}Hz | Isochronic: ${muteIsochronic ? 'muted' : isochronicVolume} (carrier-tracked equal-loudness ×1.0–1.3, punch ^${punchExponent})`);
 	console.log(`  Binaural: ${useBinaural ? `on (${binauralVolume}, carrier-tracked${binOffset ? `, +${binOffset}Hz separated` : ', coupled C±f/2'})` : 'off'} | Main volume: ${mainVolume}`);
+	console.log(`  Carrier dip: ${dipDb ? `-${dipDb} dB, one ERB wide, tracking the carrier${useBinaural && binOffset ? ` (+ second dip at carrier+${binOffset}Hz)` : ''}` : 'off'}`);
 	console.log(`  Duration: ${(durationSec / 60).toFixed(1)}min`);
 
-	// Choose channel count dynamically
-	const numChannels = alwaysMono ? 1 : (useBinaural ? 2 : (decodedNoiseBuffer && decodedNoiseBuffer.numberOfChannels > 1 ? 2 : 1));
+	// --------- Background: custom music OR built-in noise, same chain ---------
+	// Both go through: active-RMS normalisation -> true-peak limiter -> safety
+	// ceiling -> loop-boundary fades. The noise is rendered up front (session
+	// length) instead of inside the tone render, so it gets the same loudness
+	// treatment as music.
+	const backgroundSource = isCustomMusic
+		? decodedNoiseBuffer
+		: await renderNoiseBackground(noiseType, useNoiseModulation, durationSec, numChannels, outSampleRate);
 
-	// Pre-scale custom music buffer using RMS normalization (consistent perceived loudness)
-	// Cap scale factor to prevent extreme amplification that causes artifacts
-	const maxScale = 4;
-	let scaledNoiseBuffer = null;
-	if (decodedNoiseBuffer) {
-		const musicRms = getRms(decodedNoiseBuffer);
-		const musicPeak = getMaxVolume(decodedNoiseBuffer);
-		const targetVolume = customNoiseVolume !== null ? customNoiseVolume : defaultBackgroundVolume;
-		const rmsScale = targetVolume / musicRms;
-		const scale = Math.min(rmsScale, maxScale);
-		const scaledPeak = musicPeak * scale;
-		if (rmsScale > maxScale) {
-			console.log(`  RMS scale ${rmsScale.toFixed(2)}x capped to ${maxScale}x (very dynamic source)`);
+	const targetVolume = customNoiseVolume !== null ? customNoiseVolume : defaultBackgroundVolume;
+	const musicRms = getRms(backgroundSource);
+	const musicPeak = getMaxVolume(backgroundSource);
+	const active = getActiveRms(backgroundSource);
+	// Normalise on ACTIVE RMS (the loudness of the parts that actually sound), so a
+	// sparse or quietly mastered recording (rain, stream, birds at RMS ≈ 0.01) is
+	// brought to the same level as a dense one instead of staying near-inaudible.
+	// The cap only guards against pathological files; the limiter handles peaks.
+	const rmsScale = targetVolume / Math.max(active.rms, 1e-6);
+	const scale = Math.min(rmsScale, maxNormalisationScale);
+	const scaledPeak = musicPeak * scale;
+	if (rmsScale > maxNormalisationScale) {
+		console.log(`  Normalisation scale ${rmsScale.toFixed(2)}x capped to ${maxNormalisationScale}x (extremely quiet source)`);
+	}
+	console.log(`  Background source: RMS=${musicRms.toFixed(4)}, active RMS=${active.rms.toFixed(4)} (${active.activePct.toFixed(1)}% active), peak=${musicPeak.toFixed(4)}`);
+	console.log(`  Normalisation: x${scale.toFixed(3)} on active RMS -> RMS=${(musicRms * scale).toFixed(4)}, scaledPeak=${scaledPeak.toFixed(4)}`);
+
+	// Boost isochronic volume for loudly mastered custom music so tones don't get
+	// buried. Gradual ramp: 0% boost at source activeRms=0.10, up to 30% at ≥0.20.
+	// (Custom music only, as before; the carrier dip now does most of this work.)
+	if (isCustomMusic && active.rms > 0.10) {
+		const boostFactor = 1 + 0.30 * Math.min((active.rms - 0.10) / 0.10, 1);
+		isochronicVolume *= boostFactor;
+		console.log(`  Isochronic boost: ${((boostFactor - 1) * 100).toFixed(0)}% → volume ${isochronicVolume.toFixed(4)} (source active RMS ${active.rms.toFixed(4)})`);
+	}
+
+	// Create a scaled copy
+	const bgCtx = new OfflineAudioContext(backgroundSource.numberOfChannels, backgroundSource.length, backgroundSource.sampleRate);
+	const scaledNoiseBuffer = bgCtx.createBuffer(backgroundSource.numberOfChannels, backgroundSource.length, backgroundSource.sampleRate);
+	for (let ch = 0; ch < backgroundSource.numberOfChannels; ch++) {
+		const src = backgroundSource.getChannelData(ch);
+		const dst = scaledNoiseBuffer.getChannelData(ch);
+		for (let i = 0; i < src.length; i++) {
+			dst[i] = src[i] * scale;
 		}
-		console.log(`  Music buffer: RMS=${musicRms.toFixed(4)}, peak=${musicPeak.toFixed(4)}, scale=${scale.toFixed(4)}, scaledPeak=${scaledPeak.toFixed(4)}`);
-		const active = getActiveRms(decodedNoiseBuffer);
-		console.log(`  Active RMS=${active.rms.toFixed(4)} (${active.activePct.toFixed(1)}% active), silence gap ratio: ${(100 - active.activePct).toFixed(1)}%`);
+	}
 
-		// Boost isochronic volume for loud backgrounds so tones don't get buried.
-		// Gradual ramp: 0% boost at activeRms=0.10, up to 30% boost at activeRms≥0.20
-		if (active.rms > 0.10) {
-			const boostFactor = 1 + 0.30 * Math.min((active.rms - 0.10) / 0.10, 1);
-			isochronicVolume *= boostFactor;
-			console.log(`  Isochronic boost: ${((boostFactor - 1) * 100).toFixed(0)}% → volume ${isochronicVolume.toFixed(4)} (active RMS ${active.rms.toFixed(4)})`);
-		}
+	// True peak limiter: only touches actual peaks above ceiling,
+	// leaves the rest of the signal completely untouched (no artifacts)
+	if (scaledPeak > 0.85) {
+		const stats = truePeakLimiter(scaledNoiseBuffer, 0.85, 0.01);
+		console.log(`  Limiter: scaled peak ${scaledPeak.toFixed(4)} > 0.85 → gain reduced on ${stats.reducedPct.toFixed(1)}% of samples, mean reduction ${stats.meanReductionDb.toFixed(1)} dB, max ${stats.maxReductionDb.toFixed(1)} dB`);
+	}
 
-		// Create a scaled copy
-		const ctx = new OfflineAudioContext(decodedNoiseBuffer.numberOfChannels, decodedNoiseBuffer.length, decodedNoiseBuffer.sampleRate);
-		scaledNoiseBuffer = ctx.createBuffer(decodedNoiseBuffer.numberOfChannels, decodedNoiseBuffer.length, decodedNoiseBuffer.sampleRate);
-		for (let ch = 0; ch < decodedNoiseBuffer.numberOfChannels; ch++) {
-			const src = decodedNoiseBuffer.getChannelData(ch);
-			const dst = scaledNoiseBuffer.getChannelData(ch);
-			for (let i = 0; i < src.length; i++) {
-				dst[i] = src[i] * scale;
-			}
-		}
-
-		// True peak limiter: only touches actual peaks above ceiling,
-		// leaves the rest of the signal completely untouched (no artifacts)
-		if (scaledPeak > 0.85) {
-			console.log(`  Applying limiter (scaled peak ${scaledPeak.toFixed(4)} exceeds 0.85)`);
-			truePeakLimiter(scaledNoiseBuffer, 0.85, 0.01);
-		}
-
-		// Safety ceiling: guarantee peak ≤ 0.95 before entering Tone.js
-		const prePeak = getMaxVolume(scaledNoiseBuffer);
-		if (prePeak > 0.95) {
-			const safeScale = 0.95 / prePeak;
-			console.log(`  Safety ceiling: scaling by ${safeScale.toFixed(4)} (peak was ${prePeak.toFixed(4)})`);
-			for (let ch = 0; ch < scaledNoiseBuffer.numberOfChannels; ch++) {
-				const data = scaledNoiseBuffer.getChannelData(ch);
-				for (let i = 0; i < data.length; i++) data[i] *= safeScale;
-			}
-		}
-
-		// Apply fade at buffer boundaries for click-free looping
-		const loopFadeSamples = Math.round(noiseFade * scaledNoiseBuffer.sampleRate);
+	// Safety ceiling: guarantee peak ≤ 0.95 before mixing
+	const prePeak = getMaxVolume(scaledNoiseBuffer);
+	if (prePeak > 0.95) {
+		const safeScale = 0.95 / prePeak;
+		console.log(`  Safety ceiling: scaling by ${safeScale.toFixed(4)} (peak was ${prePeak.toFixed(4)})`);
 		for (let ch = 0; ch < scaledNoiseBuffer.numberOfChannels; ch++) {
 			const data = scaledNoiseBuffer.getChannelData(ch);
-			const len = data.length;
-			for (let i = 0; i < loopFadeSamples && i < len; i++) {
-				const gain = i / loopFadeSamples;
-				data[i] *= gain;              // fade in at start
-				data[len - 1 - i] *= gain;    // fade out at end
-			}
+			for (let i = 0; i < data.length; i++) data[i] *= safeScale;
 		}
-
-		const finalRms = getRms(scaledNoiseBuffer);
-		const finalPeak = getMaxVolume(scaledNoiseBuffer);
-		console.log(`  After processing: RMS=${finalRms.toFixed(4)}, peak=${finalPeak.toFixed(4)}`);
 	}
+
+	// Apply fade at buffer boundaries for click-free looping
+	const loopFadeSamples = Math.round(noiseFade * scaledNoiseBuffer.sampleRate);
+	for (let ch = 0; ch < scaledNoiseBuffer.numberOfChannels; ch++) {
+		const data = scaledNoiseBuffer.getChannelData(ch);
+		const len = data.length;
+		for (let i = 0; i < loopFadeSamples && i < len; i++) {
+			const gain = i / loopFadeSamples;
+			data[i] *= gain;              // fade in at start
+			data[len - 1 - i] *= gain;    // fade out at end
+		}
+	}
+
+	const finalRms = getRms(scaledNoiseBuffer);
+	const finalPeak = getMaxVolume(scaledNoiseBuffer);
+	console.log(`  Background after processing: RMS=${finalRms.toFixed(4)}, peak=${finalPeak.toFixed(4)}`);
 
 	// SI-DO binaural emphasis: at each band crossing (a lift step followed by an
 	// exponential ramp landing on an octave DO boundary), the binaural layer is
@@ -291,9 +424,8 @@ async function generateAudio(options) {
 		}
 	}
 
-	// Tone.js renders ONLY isochronic tones, binaural beats, and built-in noise.
-	// Custom music is mixed in afterward with simple math — no Tone.Player,
-	// no Tone.Buffer conversion, no black-box behavior.
+	// Tone.js renders ONLY the isochronic tones and binaural beats. The background
+	// (music or noise) is mixed in afterward with plain sample math.
 	const rendered = await Tone.Offline(({ transport }) => {
 		// Carrier gated by LFO (0..1) -> carrier-tracked level gain -> master
 		const initialCarrier = startingCarrier;
@@ -342,24 +474,6 @@ async function generateAudio(options) {
 		const master = new Tone.Gain(0).toDestination();
 		if (!muteIsochronic) {
 			isoLevel.connect(master);
-		}
-
-		// Built-in noise (only for noise sessions, NOT custom music)
-		if (!scaledNoiseBuffer) {
-			const noiseGain = new Tone.Gain(defaultNoiseVolume);
-			let filter = null;
-			if (useNoiseModulation) {
-				filter = new Tone.AutoFilter({
-					frequency: "8m",
-					min: 2000,
-					max: 15000,
-					Q: 0.5
-				}).connect(noiseGain);
-				filter.start(0);
-			}
-			const toneNoise = new Tone.Noise(noiseType.toLowerCase()).connect(filter || noiseGain);
-			toneNoise.start(0);
-			noiseGain.connect(master);
 		}
 
 		if (binauralLevel) {
@@ -445,33 +559,31 @@ async function generateAudio(options) {
 		}
 
 		transport.start(0);
-	}, durationSec, alwaysMono ? 1 : numChannels);
+	}, durationSec, alwaysMono ? 1 : numChannels, outSampleRate);
 
-	// Mix custom music directly into the rendered output (bypasses Tone.js entirely)
-	if (scaledNoiseBuffer) {
+	// --------- Mix the background into the rendered tones ---------
+	{
 		const headroom = Math.min(mainVolume, 0.89);
 		const fadeInEnd = Math.min(fadeIn, durationSec);
 		const fadeOutStart = Math.max(0, durationSec - Math.max(0, fadeOut + finalBuffer));
 		const fadeOutEnd = Math.min(durationSec, fadeOutStart + fadeOut);
 		const outSR = rendered.sampleRate;
-		const musicSR = scaledNoiseBuffer.sampleRate;
-		const musicLen = scaledNoiseBuffer.length;
-		const musicChannels = scaledNoiseBuffer.numberOfChannels;
 
-		// Get channel data references
-		const musicData = [];
-		for (let ch = 0; ch < musicChannels; ch++) {
-			musicData.push(scaledNoiseBuffer.getChannelData(ch));
+		// 1. Session-length background track (looped + resampled to the output format)
+		let track = buildBackgroundTrack(scaledNoiseBuffer, outSR, rendered.length, rendered.numberOfChannels);
+
+		// 2. Carrier-tracking dip (and a second dip on the separated binaural base)
+		if (dipDb) {
+			const offsets = (useBinaural && numChannels === 2 && binOffset) ? [binOffset] : [];
+			track = await applyCarrierDip(track, sequence, startingCarrier, dipDb, offsets);
 		}
 
+		// 3. Add with the master fade envelope (same shape as the Tone.js master gain)
 		for (let ch = 0; ch < rendered.numberOfChannels; ch++) {
 			const outData = rendered.getChannelData(ch);
-			const srcCh = ch < musicChannels ? ch : 0; // mono music → both channels
-
+			const bg = track.getChannelData(ch);
 			for (let i = 0; i < rendered.length; i++) {
 				const t = i / outSR;
-
-				// Master fade envelope (same as Tone.js master gain)
 				let masterGain;
 				if (t < fadeInEnd) {
 					masterGain = headroom * (t / fadeInEnd);
@@ -482,18 +594,10 @@ async function generateAudio(options) {
 				} else {
 					masterGain = headroom;
 				}
-
-				// Music sample with linear interpolation (handles sample rate conversion)
-				const musicPos = (i * musicSR / outSR) % musicLen;
-				const idx0 = Math.floor(musicPos);
-				const idx1 = (idx0 + 1) % musicLen;
-				const frac = musicPos - idx0;
-				const musicSample = musicData[srcCh][idx0] * (1 - frac) + musicData[srcCh][idx1] * frac;
-
-				outData[i] += musicSample * masterGain;
+				outData[i] += bg[i] * masterGain;
 			}
 		}
-		console.log(`  Music mixed directly (bypassed Tone.js Player)`);
+		console.log(`  Background mixed directly${dipDb ? ' after carrier dip' : ''} (bypassed Tone.js Player)`);
 	}
 
 	// Post-render: normalize to 0.95 peak if clipping
@@ -593,6 +697,19 @@ function truePeakLimiter(audioBuffer, ceiling, lookAheadSec) {
 			data[i] *= lookaheadGain[i];
 		}
 	}
+
+	// Stats: how hard the limiter worked (logged so heavy, audible limiting is visible)
+	let reduced = 0, sumDb = 0, minGain = 1;
+	for (let i = 0; i < length; i++) {
+		const g = lookaheadGain[i];
+		if (g < 0.99) { reduced++; sumDb += 20 * Math.log10(g); }
+		if (g < minGain) minGain = g;
+	}
+	return {
+		reducedPct: 100 * reduced / length,
+		meanReductionDb: reduced ? -sumDb / reduced : 0,
+		maxReductionDb: -20 * Math.log10(Math.max(minGain, 1e-6))
+	};
 }
 
 function getRms(audioBuffer) {
