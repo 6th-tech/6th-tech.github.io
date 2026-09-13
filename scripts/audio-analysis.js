@@ -292,9 +292,12 @@ const AudioAnalysis = (() => {
 		if (nConflicts > 0) issues.push(`rhythm at ${nConflicts} beat freq${nConflicts > 1 ? 's' : ''}`);
 		else if (tempo.m >= 0.30 && mixRms >= 0.15) issues.push(`rhythmic (${tempo.f.toFixed(1)} Hz, ${(tempo.m * 100).toFixed(0)}% depth)`);
 		if (mixRms < 0.15) issues.push(`background too quiet (mix RMS ${mixRms.toFixed(2)})`);
+		const notes = [];
 		if (o.useBinaural) {
 			if (maxBin >= 40) issues.push(`binaural masked ${maxBin.toFixed(0)}%`); else if (maxBin >= 15) issues.push(`binaural mild ${maxBin.toFixed(0)}%`);
-			if (minIacc < 0.3) issues.push(`wide stereo in carrier band`);
+			// Informational only: a wide stereo image adds uncorrelated noise around the binaural
+			// pair, but the masking test above already measures whether the pair stays audible.
+			if (minIacc < 0.3) notes.push(`wide stereo in carrier band`);
 		}
 		const real = maxIso >= 20 || maxStrong >= 10 || nConflicts > 0 || (o.useBinaural && maxBin >= 40);
 		const severity = real ? "real" : (issues.length ? "mild" : "clean");
@@ -304,8 +307,8 @@ const AudioAnalysis = (() => {
 			(c.medianOffsetHz !== null ? ` (≈${c.medianOffsetHz.toFixed(1)} Hz off)` : '') +
 			`, L/R corr ${c.iacc.toFixed(2)}` +
 			(c.conflicts.length ? `, rhythm: ${c.conflicts.map(k => `${k.beat} Hz@${(k.m * 100).toFixed(0)}%`).join(' ')}` : ''));
-		const summary = `${severity.toUpperCase()}${issues.length ? ': ' + issues.join('; ') : ' (no interference found)'} — src RMS ${rms.toFixed(3)} (${activePct.toFixed(0)}% active) ×${scale.toFixed(1)} → mix ${mixRms.toFixed(2)}`;
-		return { severity, issues, summary, lines, mixRms, scale, activePct, tempo, perCarrier };
+		const summary = `${severity.toUpperCase()}${issues.length ? ': ' + issues.join('; ') : ' (no interference found)'}${notes.length ? ' (note: ' + notes.join('; ') + ')' : ''} — src RMS ${rms.toFixed(3)} (${activePct.toFixed(0)}% active) ×${scale.toFixed(1)} → mix ${mixRms.toFixed(2)}`;
+		return { severity, issues, notes, summary, lines, mixRms, scale, activePct, tempo, perCarrier };
 	}
 
 	return { analyzeBackground };

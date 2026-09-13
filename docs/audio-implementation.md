@@ -174,9 +174,10 @@ Measured effect on the audited sessions (normalization fix + 12 dB dip): isochro
 | rhythm | in-band amplitude modulation at the session's own beat frequencies (≥ 15% depth, background within 20 dB of the tone) | any |
 | tempo | broadband modulation peak 0.5–8 Hz ≥ 30% depth | mild |
 | level | mix RMS after normalization | mild when < 0.15 |
-| binaural | same masking test against the binaural level; L/R correlation in band | masked ≥ 40% (mild ≥ 15%); corr < 0.3 |
+| binaural | same masking test against the binaural level, in its own (possibly separated) band | masked ≥ 40% (mild ≥ 15%) |
+| stereo | L/R correlation in the carrier band below 0.3 | note only, does not change the verdict |
 
-Both generator pages run it automatically (checkbox "Pre-flight background analysis"): the single generator prints the verdict under the checkbox, the bulk generator prints it next to each generated file and logs per-carrier detail to the console. The offline Python twin (`scripts/analysis/analyze_bg.py`, `verify.py`) computes the same metrics for a folder of candidates against `default_sessions.json` — use it to vet new recordings before downloading a whole set.
+Both generator pages run it automatically (checkbox "Pre-flight background analysis"): the single generator prints the verdict under the checkbox, the bulk generator prints it next to each generated file and logs per-carrier detail to the console. The offline Python twin (`scripts/analysis/analyze_bg.py`, `verify.py`) computes the same metrics with the same one-ERB band filter (two cascaded RBJ band-passes, roex-like skirts) for a folder of candidates against `default_sessions.json` — use it to vet new recordings before downloading a whole set.
 
 Selection rules that follow from the metrics: no sustained pitch between 150 and 950 Hz (no drones, pads, bowls, chimes, flute, piano, vocals in that register); no tempo (drums, arpeggios, pulsing synths); broadband textures (rain, wind, stream, surf, fire) pass by construction; centred stereo for binaural sessions; mastered at a sane level (RMS > 0.05, mostly active) so normalization stays moderate.
 
@@ -357,6 +358,12 @@ node scripts/batch/regen-sessions.js \
   --sounds "/Users/smanuel/Desktop/Used Sounds - Replacements,/Users/smanuel/Desktop/Used Sounds" \
   --out "/Users/smanuel/Desktop/New Sessions6"
 ./generate.sh "/Users/smanuel/Desktop/New Sessions6"   # FLAC + ALAC next to each WAV
+```
+
+`scripts/batch/preflight.js` runs the same in-page analyzer headlessly for any sessions JSON and sound folder (`--only` to pick sessions), so a verdict can be reproduced outside the page:
+
+```bash
+node scripts/batch/preflight.js --sessions ../sixth/sixth-mind/assets/default_sessions.json --sounds "/Users/smanuel/Desktop/New Used Sounds" --only "Sleepy Horizons"
 ```
 
 Defaults match the shipped default-session renders (binaural on with +150 Hz carrier separation, isochronic 0.35, punch 2, background 0.5, main 0.7, 12 dB carrier dip, 48 kHz stereo 16-bit — the punch and binaural settings were read back from the shipped renders' sideband ratios); every value has a flag. Complete files are skipped, so a run can be restarted. The pre-flight verdict for each music-backed session is printed with the render line.

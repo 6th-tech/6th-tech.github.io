@@ -64,9 +64,15 @@ def active_rms(x, thr=0.01):
     m = np.abs(x) > thr
     return (float(np.sqrt(np.mean(x[m] ** 2))) if m.any() else 0.0), float(m.mean() * 100)
 
-def bandpass(x, lo, hi, fs, order=4):
-    sos = signal.butter(order, [lo, hi], btype="band", fs=fs, output="sos")
-    return signal.sosfiltfilt(sos, x)
+def bandpass(x, lo, hi, fs, order=None):
+    """One-ERB band around the carrier: two cascaded RBJ bandpass biquads whose combined
+    equivalent noise bandwidth is one ERB, with roex-like skirts (~10 dB one ERB away).
+    Identical to bandpassErb() in scripts/audio-analysis.js so both analyzers agree."""
+    C = 0.5 * (lo + hi); bw = hi - lo
+    Q = C / (1.27 * bw)
+    w0 = 2 * np.pi * C / fs; al = np.sin(w0) / (2 * Q)
+    b = np.array([al, 0.0, -al]) / (1 + al); a = np.array([1 + al, -2 * np.cos(w0), 1 - al]) / (1 + al)
+    return signal.lfilter(b, a, signal.lfilter(b, a, x))
 
 def lowpass(x, fc, fs, order=4):
     sos = signal.butter(order, fc, btype="low", fs=fs, output="sos")
