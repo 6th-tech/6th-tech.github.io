@@ -41,7 +41,10 @@
 			
 			<div class="form-group">
 				<label for="noiseVolume">Background Sound Volume:</label>
-				<input type="number" id="noiseVolume" value="0.5" min="0" max="2" step="0.1" />
+				<input type="number" id="noiseVolume" value="0.3" min="0" max="1" step="0.05" />
+				<div class="help-text">
+					Target loudness of the background as heard (active RMS after the carrier dip and transient clipping). 0.3 sits about 7 dB above the isochronic tone; every session lands at the same level regardless of how the file was mastered.
+				</div>
 			</div>
 			
 			<div class="form-group">

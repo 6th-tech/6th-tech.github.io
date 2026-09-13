@@ -188,6 +188,7 @@ async function generateSingleAudio(config, index) {
 			const report = AudioAnalysis.analyzeBackground(decodedNoiseBuffer, parsedSequence, {
 				targetVolume: rules.customNoiseVolume,
 				isochronicVolume: parseFloat(isochronicVolumeInput.value),
+				isochronicPunch: parseFloat(isochronicPunchInput.value),
 				useBinaural: useBinauralCheckbox.checked,
 				binauralCarrierOffset: parseFloat(binauralCarrierOffsetInput.value),
 				carrierDipDb

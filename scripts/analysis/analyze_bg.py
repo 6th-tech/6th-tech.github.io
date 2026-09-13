@@ -32,7 +32,8 @@ FS_ENV = FS / ENV_DEC
 SOUNDS = os.environ.get("SOUNDS", "/Users/smanuel/Desktop/Used Sounds")
 SESSIONS = os.environ.get("SESSIONS", "/Users/smanuel/Work/sixth/sixth-mind/assets/default_sessions.json")
 
-ISO_VOL, BIN_VOL, TARGET_RMS = 0.35, 0.16, 0.5
+ISO_VOL = float(os.environ.get("ISO", 0.35)); BIN_VOL = 0.16; TARGET_RMS = float(os.environ.get("TARGET", 0.3))  # target ACTIVE RMS after dip + clipping
+PUNCH = float(os.environ.get("PUNCH", 2)); SOFT_KNEE, PEAK_CEIL = 0.6, 0.85
 MAX_SCALE = float(os.environ.get("CAP", 40))       # normalisation scale cap (generator: 40)
 DUCK_DB = float(os.environ.get("DUCK_DB", 12))      # carrier-tracking dip carved out of the music (generator: 12)
 NORM = os.environ.get("NORM", "active")             # 'active' (generator) or 'global' RMS as normalisation reference
@@ -47,7 +48,8 @@ def duck(x, C, fs):
     """Peaking-EQ dip of DUCK_DB centred on the carrier, one ERB wide (what a carrier-tracking notch in the generator would do)."""
     b, a = peaking(C, fs, -abs(DUCK_DB), C / erb(C))
     return signal.lfilter(b, a, x, axis=-1)
-ISO_ENV_RMS = 0.6124          # rms of 0.5(1+sin)
+_t = np.linspace(0, 1, 4096, endpoint=False)
+ISO_ENV_RMS = float(np.sqrt(np.mean((0.5 * (1 + np.sin(2 * np.pi * _t))) ** (2 * PUNCH))))  # rms of the pulse envelope (0.5(1+sin))^punch
 SINE_RMS = 0.7071
 
 def erb(f):  return 24.7 * (4.37 * f / 1000 + 1)
@@ -73,6 +75,23 @@ def bandpass(x, lo, hi, fs, order=None):
     w0 = 2 * np.pi * C / fs; al = np.sin(w0) / (2 * Q)
     b = np.array([al, 0.0, -al]) / (1 + al); a = np.array([1 + al, -2 * np.cos(w0), 1 - al]) / (1 + al)
     return signal.lfilter(b, a, signal.lfilter(b, a, x))
+
+def soft_clip(x, knee=SOFT_KNEE, ceil=PEAK_CEIL):
+    a = np.abs(x); r = ceil - knee
+    return np.where(a > knee, np.sign(x) * (knee + r * np.tanh((a - knee) / r)), x)
+
+def active_rms_mono(x2):
+    m = 0.5 * (x2[0] + x2[1]); sel = np.abs(m) > 0.01
+    return float(np.sqrt(np.mean(m[sel] ** 2))) if sel.any() else 0.0
+
+def stage(x2):
+    """Generator level staging on a (2, N) unity-gain, already-dipped signal: normalise the
+    active RMS to TARGET_RMS (cap MAX_SCALE), soft-clip, one corrective pass."""
+    scale = min(TARGET_RMS / max(active_rms_mono(x2), 1e-6), MAX_SCALE)
+    y = soft_clip(x2 * scale); got = active_rms_mono(y)
+    if abs(20 * np.log10(max(got, 1e-9) / TARGET_RMS)) >= 0.3:
+        scale = min(scale * TARGET_RMS / max(got, 1e-6), MAX_SCALE); y = soft_clip(x2 * scale)
+    return y, scale
 
 def lowpass(x, fc, fs, order=4):
     sos = signal.butter(order, fc, btype="low", fs=fs, output="sos")
@@ -153,18 +172,18 @@ def analyse(path, carriers, beats, iso_extra=1.0):
     rms_all = float(np.sqrt(np.mean(x ** 2)))
     peak = float(np.abs(x).max())
     a_rms, a_pct = active_rms(x)
-    ref = a_rms if NORM == "active" else rms_all
-    scale = min(TARGET_RMS / max(ref, 1e-9), MAX_SCALE)
     boost = 1 + 0.30 * min((a_rms - 0.10) / 0.10, 1) if a_rms > 0.10 else 1.0
-    xs = x * scale
-    iacc_bb = float(np.corrcoef(xs[0], xs[1])[0, 1])
+    iacc_bb = float(np.corrcoef(x[0], x[1])[0, 1])
 
-    xd = signal.resample_poly(xs, 1, DEC, axis=1)
-    mono = xd.mean(axis=0)
+    xd0 = signal.resample_poly(x, 1, DEC, axis=1)          # unity gain
+    # broadband level as heard: dip at the first carrier, then the generator's level staging
+    xbb = duck(xd0, carriers[0], FS) if DUCK_DB else xd0
+    xbb, scale = stage(xbb)
+    mono = xbb.mean(axis=0)
 
     out = {"file": os.path.basename(path), "dur_s": n / SR, "rms": rms_all, "peak": peak,
            "active_rms": a_rms, "active_pct": a_pct, "scale": scale, "iso_boost_1c": boost,
-           "rms_after": rms_all * scale, "iacc_broadband": iacc_bb, "carriers": {}}
+           "rms_after": active_rms_mono(xbb), "iacc_broadband": iacc_bb, "carriers": {}}
 
     # broadband modulation spectrum (0-2 kHz after decimation)
     f, m = mod_spectrum(mono, FS)
@@ -172,7 +191,8 @@ def analyse(path, carriers, beats, iso_extra=1.0):
 
     for C in carriers:
         half = erb(C) / 2
-        xc = duck(xd, C, FS) if DUCK_DB else xd
+        xc = duck(xd0, C, FS) if DUCK_DB else xd0
+        xc, _ = stage(xc)
         mono = xc.mean(axis=0)
         bl = bandpass(xc[0], C - half, C + half, FS)
         br = bandpass(xc[1], C - half, C + half, FS)

@@ -151,13 +151,14 @@ const AudioAnalysis = (() => {
 
 	function analyzeBackground(buffer, sequence, options) {
 		const o = Object.assign({
-			targetVolume: 0.5, maxScale: 40, isochronicVolume: 0.35, binauralVolume: 0.16,
-			useBinaural: false, binauralCarrierOffset: 0, carrierDipDb: 12, isCustomMusic: true
+			targetVolume: 0.3, maxScale: 40, isochronicVolume: 0.35, isochronicPunch: 1, binauralVolume: 0.16,
+			useBinaural: false, binauralCarrierOffset: 0, carrierDipDb: 12, isCustomMusic: true,
+			softClipKnee: 0.6, peakCeiling: 0.85
 		}, options || {});
 		const fs0 = buffer.sampleRate;
 		const nCh = buffer.numberOfChannels;
 
-		// ---- gain staging, identical to generateAudio ----
+		// ---- source statistics ----
 		let rms = 0, active = 0, activeSum = 0, total = 0;
 		for (let ch = 0; ch < nCh; ch++) {
 			const d = buffer.getChannelData(ch);
@@ -166,22 +167,39 @@ const AudioAnalysis = (() => {
 		rms = Math.sqrt(rms / Math.max(total, 1));
 		const activeRms = active ? Math.sqrt(activeSum / active) : 0;
 		const activePct = 100 * active / Math.max(total, 1);
-		const scale = Math.min(o.targetVolume / Math.max(activeRms, 1e-6), o.maxScale);
-		const mixRms = rms * scale;
 		let isoVol = o.isochronicVolume;
 		if (o.isCustomMusic && activeRms > 0.10) isoVol *= 1 + 0.30 * Math.min((activeRms - 0.10) / 0.10, 1);
+		// rms of the pulse envelope (0.5(1+sin))^punch
+		let envRms = 0; { const n = 2048; let s = 0; for (let i = 0; i < n; i++) { const e = Math.pow(0.5 * (1 + Math.sin(2 * Math.PI * i / n)), o.isochronicPunch || 1); s += e * e; } envRms = Math.sqrt(s / n); }
 
-		// ---- decimated working copies (~4.4 kHz is plenty for carriers ≤ 852 Hz) ----
+		// ---- decimated working copies at unity gain (~4.4 kHz is plenty for carriers ≤ 852 Hz) ----
 		const factor = Math.max(1, Math.round(fs0 / 4400));
 		const fs = fs0 / factor;
 		const chans = [];
-		for (let ch = 0; ch < Math.min(nCh, 2); ch++) {
-			const d = buffer.getChannelData(ch);
-			const scaled = new Float32Array(d.length);
-			for (let i = 0; i < d.length; i++) scaled[i] = d[i] * scale;
-			chans.push(decimate(scaled, fs0, factor));
-		}
-		const L = chans[0], R = chans[1] || chans[0];
+		for (let ch = 0; ch < Math.min(nCh, 2); ch++) chans.push(decimate(buffer.getChannelData(ch), fs0, factor));
+		const L0 = chans[0], R0 = chans[1] || chans[0];
+
+		// ---- level staging, mirroring generateAudio: the DIPPED signal is normalised to
+		//      the target active RMS and its transients are soft-clipped. Done per carrier
+		//      (the generator's dip tracks the carrier through the session).
+		const activeRmsOf = (a, b) => { let s = 0, n = 0; for (let i = 0; i < a.length; i++) { const x = 0.5 * (a[i] + b[i]); if (Math.abs(x) > 0.01) { s += x * x; n++; } } return n ? Math.sqrt(s / n) : 0; };
+		const clip = (x) => { const k = o.softClipKnee, r = o.peakCeiling - k; const a = Math.abs(x); return a > k ? (x < 0 ? -1 : 1) * (k + r * Math.tanh((a - k) / r)) : x; };
+		const stage = (l, r) => { // returns scaled+clipped copies and the scale used
+			const dipRms = activeRmsOf(l, r);
+			let scale = Math.min(o.targetVolume / Math.max(dipRms, 1e-6), o.maxScale);
+			const out = () => { const L = new Float32Array(l.length), R = new Float32Array(r.length); for (let i = 0; i < l.length; i++) { L[i] = clip(l[i] * scale); R[i] = clip(r[i] * scale); } return [L, R]; };
+			let [L, R] = out();
+			const got = activeRmsOf(L, R);
+			if (Math.abs(20 * Math.log10(got / o.targetVolume)) >= 0.3) { scale = Math.min(scale * o.targetVolume / Math.max(got, 1e-6), o.maxScale); [L, R] = out(); }
+			return { L, R, scale, rms: activeRmsOf(L, R) };
+		};
+		// broadband level as it will be heard: dip at the first carrier is representative enough for the tempo check
+		const firstC = sequence[0] && sequence[0].carrierFreq ? sequence[0].carrierFreq : 174;
+		let bbL = L0, bbR = R0;
+		if (o.carrierDipDb > 0) { const dip0 = biquad("peaking", firstC, fs, firstC / ERB(firstC), -Math.abs(o.carrierDipDb)); bbL = run(L0, dip0); bbR = run(R0, dip0); }
+		const bbStage = stage(bbL, bbR);
+		const scale = bbStage.scale, mixRms = bbStage.rms;
+		const L = bbStage.L, R = bbStage.R;
 		const monoAll = new Float32Array(L.length);
 		for (let i = 0; i < L.length; i++) monoAll[i] = 0.5 * (L[i] + R[i]);
 
@@ -200,16 +218,19 @@ const AudioAnalysis = (() => {
 		const N = 4096, w = hann(N); let wsum = 0; for (let i = 0; i < N; i++) wsum += w[i];
 		const re = new Float64Array(N), im = new Float64Array(N);
 		const perCarrier = carriers.map(C => {
-			let xl = L, xr = R;
+			// dip at this carrier on the unity signal, then the same level staging the generator applies
+			let dl = L0, dr = R0;
 			if (o.carrierDipDb > 0) {
 				const dip = biquad("peaking", C, fs, C / ERB(C), -Math.abs(o.carrierDipDb));
-				xl = run(L, dip); xr = run(R, dip);
+				dl = run(L0, dip); dr = run(R0, dip);
 			}
+			const st = stage(dl, dr);
+			const xl = st.L, xr = st.R;
 			const bl = bandpassErb(xl, C, fs), br = bandpassErb(xr, C, fs);
 			const fl = frameRms(bl, fs, 1), fr = frameRms(br, fs, 1);
 			const band = new Float64Array(fl.length);
 			for (let i = 0; i < band.length; i++) band[i] = 0.5 * (fl[i] + fr[i]);
-			const isoRms = isoVol * ELB(C) * ISO_ENV_RMS * SINE_RMS;
+			const isoRms = isoVol * ELB(C) * envRms * SINE_RMS;
 			let isoMasked = 0;
 			for (let i = 0; i < band.length; i++) if (band[i] > isoRms) isoMasked++;
 			const p50 = median(band);
@@ -220,8 +241,8 @@ const AudioAnalysis = (() => {
 			const Cb = C + (o.binauralCarrierOffset > 0 ? o.binauralCarrierOffset : 0);
 			let binBand = band;
 			if (Cb !== C) {
-				let yl = L, yr = R;
-				if (o.carrierDipDb > 0) { const dipB = biquad("peaking", Cb, fs, Cb / ERB(Cb), -Math.abs(o.carrierDipDb)); yl = run(L, dipB); yr = run(R, dipB); }
+				let yl = xl, yr = xr;
+				if (o.carrierDipDb > 0) { const dipB = biquad("peaking", Cb, fs, Cb / ERB(Cb), -Math.abs(o.carrierDipDb)); yl = run(xl, dipB); yr = run(xr, dipB); }
 				const fbl = frameRms(bandpassErb(yl, Cb, fs), fs, 1), fbr = frameRms(bandpassErb(yr, Cb, fs), fs, 1);
 				binBand = new Float64Array(fbl.length);
 				for (let i = 0; i < binBand.length; i++) binBand[i] = 0.5 * (fbl[i] + fbr[i]);

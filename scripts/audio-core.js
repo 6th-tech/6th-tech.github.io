@@ -7,10 +7,12 @@ const fadeIn = 10; // sec
 const fadeOut = 10; // sec
 const noiseFade = 3; // sec
 const finalBuffer = 3; // sec
-const defaultBackgroundVolume = 0.5;
+const defaultBackgroundVolume = 0.3;   // target ACTIVE RMS of the background as heard (after dip and clipping)
 const defaultNoiseVolume = 0.7; // legacy: built-in noise now goes through the same normalisation as music
 const defaultCarrierDipDb = 12;      // dB carved out of the background around the carrier (one ERB wide)
 const maxNormalisationScale = 40;   // cap on active-RMS normalisation gain (was 4 on global RMS)
+const softClipKnee = 0.6;           // samples above this are rounded off smoothly …
+const peakCeiling = 0.85;           // … and never exceed this
 
 // --------- Parsing Functions ---------
 function parseSequence(sequenceText) {
@@ -225,6 +227,35 @@ async function applyCarrierDip(track, sequence, startingCarrier, dipDb, offsets)
 	return await ctx.startRendering();
 }
 
+// Smooth soft clipper: identity below the knee, then a tanh curve that approaches the
+// ceiling asymptotically (C¹-continuous at the knee). Only the samples above the knee
+// are touched, so — unlike a limiter — nothing around a transient is modulated.
+function softClipBuffer(buffer, knee, ceiling) {
+	const range = ceiling - knee;
+	let clipped = 0, total = 0, maxIn = 0;
+	for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
+		const d = buffer.getChannelData(ch);
+		for (let i = 0; i < d.length; i++) {
+			const a = Math.abs(d[i]);
+			if (a > maxIn) maxIn = a;
+			if (a > knee) {
+				clipped++;
+				const y = knee + range * Math.tanh((a - knee) / range);
+				d[i] = d[i] < 0 ? -y : y;
+			}
+			total++;
+		}
+	}
+	return { clippedPct: 100 * clipped / Math.max(total, 1), maxIn };
+}
+
+// RMS of the isochronic pulse envelope (0.5(1+sin))^p, used for level reporting
+function punchEnvelopeRms(p) {
+	let s = 0; const n = 4096;
+	for (let i = 0; i < n; i++) { const e = Math.pow(0.5 * (1 + Math.sin(2 * Math.PI * i / n)), p); s += e * e; }
+	return Math.sqrt(s / n);
+}
+
 // --------- Core Audio Generation Function ---------
 async function generateAudio(options) {
 	const {
@@ -304,10 +335,11 @@ async function generateAudio(options) {
 	console.log(`  Duration: ${(durationSec / 60).toFixed(1)}min`);
 
 	// --------- Background: custom music OR built-in noise, same chain ---------
-	// Both go through: active-RMS normalisation -> true-peak limiter -> safety
-	// ceiling -> loop-boundary fades. The noise is rendered up front (session
-	// length) instead of inside the tone render, so it gets the same loudness
-	// treatment as music.
+	// The background is prepared at unity gain here; its LEVEL is set later, after the
+	// carrier dip has been applied to the session-length track, so that the target
+	// is the level the listener actually hears (post-dip, post-clipping) and every
+	// session lands at the same background loudness regardless of crest factor or
+	// how much of the file's energy sat inside the carrier band.
 	const backgroundSource = isCustomMusic
 		? decodedNoiseBuffer
 		: await renderNoiseBackground(noiseType, useNoiseModulation, durationSec, numChannels, outSampleRate);
@@ -316,18 +348,7 @@ async function generateAudio(options) {
 	const musicRms = getRms(backgroundSource);
 	const musicPeak = getMaxVolume(backgroundSource);
 	const active = getActiveRms(backgroundSource);
-	// Normalise on ACTIVE RMS (the loudness of the parts that actually sound), so a
-	// sparse or quietly mastered recording (rain, stream, birds at RMS ≈ 0.01) is
-	// brought to the same level as a dense one instead of staying near-inaudible.
-	// The cap only guards against pathological files; the limiter handles peaks.
-	const rmsScale = targetVolume / Math.max(active.rms, 1e-6);
-	const scale = Math.min(rmsScale, maxNormalisationScale);
-	const scaledPeak = musicPeak * scale;
-	if (rmsScale > maxNormalisationScale) {
-		console.log(`  Normalisation scale ${rmsScale.toFixed(2)}x capped to ${maxNormalisationScale}x (extremely quiet source)`);
-	}
-	console.log(`  Background source: RMS=${musicRms.toFixed(4)}, active RMS=${active.rms.toFixed(4)} (${active.activePct.toFixed(1)}% active), peak=${musicPeak.toFixed(4)}`);
-	console.log(`  Normalisation: x${scale.toFixed(3)} on active RMS -> RMS=${(musicRms * scale).toFixed(4)}, scaledPeak=${scaledPeak.toFixed(4)}`);
+	console.log(`  Background source: RMS=${musicRms.toFixed(4)}, active RMS=${active.rms.toFixed(4)} (${active.activePct.toFixed(1)}% active), peak=${musicPeak.toFixed(4)}, crest ${(20 * Math.log10(musicPeak / Math.max(musicRms, 1e-6))).toFixed(1)} dB`);
 
 	// Boost isochronic volume for loudly mastered custom music so tones don't get
 	// buried. Gradual ramp: 0% boost at source activeRms=0.10, up to 30% at ≥0.20.
@@ -338,50 +359,21 @@ async function generateAudio(options) {
 		console.log(`  Isochronic boost: ${((boostFactor - 1) * 100).toFixed(0)}% → volume ${isochronicVolume.toFixed(4)} (source active RMS ${active.rms.toFixed(4)})`);
 	}
 
-	// Create a scaled copy
+	// Unity-gain copy with fades baked into the buffer boundaries for click-free looping
 	const bgCtx = new OfflineAudioContext(backgroundSource.numberOfChannels, backgroundSource.length, backgroundSource.sampleRate);
 	const scaledNoiseBuffer = bgCtx.createBuffer(backgroundSource.numberOfChannels, backgroundSource.length, backgroundSource.sampleRate);
+	const loopFadeSamples = Math.round(noiseFade * backgroundSource.sampleRate);
 	for (let ch = 0; ch < backgroundSource.numberOfChannels; ch++) {
 		const src = backgroundSource.getChannelData(ch);
 		const dst = scaledNoiseBuffer.getChannelData(ch);
-		for (let i = 0; i < src.length; i++) {
-			dst[i] = src[i] * scale;
-		}
-	}
-
-	// True peak limiter: only touches actual peaks above ceiling,
-	// leaves the rest of the signal completely untouched (no artifacts)
-	if (scaledPeak > 0.85) {
-		const stats = truePeakLimiter(scaledNoiseBuffer, 0.85, 0.01);
-		console.log(`  Limiter: scaled peak ${scaledPeak.toFixed(4)} > 0.85 → gain reduced on ${stats.reducedPct.toFixed(1)}% of samples, mean reduction ${stats.meanReductionDb.toFixed(1)} dB, max ${stats.maxReductionDb.toFixed(1)} dB`);
-	}
-
-	// Safety ceiling: guarantee peak ≤ 0.95 before mixing
-	const prePeak = getMaxVolume(scaledNoiseBuffer);
-	if (prePeak > 0.95) {
-		const safeScale = 0.95 / prePeak;
-		console.log(`  Safety ceiling: scaling by ${safeScale.toFixed(4)} (peak was ${prePeak.toFixed(4)})`);
-		for (let ch = 0; ch < scaledNoiseBuffer.numberOfChannels; ch++) {
-			const data = scaledNoiseBuffer.getChannelData(ch);
-			for (let i = 0; i < data.length; i++) data[i] *= safeScale;
-		}
-	}
-
-	// Apply fade at buffer boundaries for click-free looping
-	const loopFadeSamples = Math.round(noiseFade * scaledNoiseBuffer.sampleRate);
-	for (let ch = 0; ch < scaledNoiseBuffer.numberOfChannels; ch++) {
-		const data = scaledNoiseBuffer.getChannelData(ch);
-		const len = data.length;
+		dst.set(src);
+		const len = dst.length;
 		for (let i = 0; i < loopFadeSamples && i < len; i++) {
 			const gain = i / loopFadeSamples;
-			data[i] *= gain;              // fade in at start
-			data[len - 1 - i] *= gain;    // fade out at end
+			dst[i] *= gain;              // fade in at start
+			dst[len - 1 - i] *= gain;    // fade out at end
 		}
 	}
-
-	const finalRms = getRms(scaledNoiseBuffer);
-	const finalPeak = getMaxVolume(scaledNoiseBuffer);
-	console.log(`  Background after processing: RMS=${finalRms.toFixed(4)}, peak=${finalPeak.toFixed(4)}`);
 
 	// SI-DO binaural emphasis: at each band crossing (a lift step followed by an
 	// exponential ramp landing on an octave DO boundary), the binaural layer is
@@ -561,7 +553,7 @@ async function generateAudio(options) {
 		transport.start(0);
 	}, durationSec, alwaysMono ? 1 : numChannels, outSampleRate);
 
-	// --------- Mix the background into the rendered tones ---------
+	// --------- Level, dynamics and mix of the background ---------
 	{
 		const headroom = Math.min(mainVolume, 0.89);
 		const fadeInEnd = Math.min(fadeIn, durationSec);
@@ -569,7 +561,7 @@ async function generateAudio(options) {
 		const fadeOutEnd = Math.min(durationSec, fadeOutStart + fadeOut);
 		const outSR = rendered.sampleRate;
 
-		// 1. Session-length background track (looped + resampled to the output format)
+		// 1. Session-length background track (looped + resampled to the output format), unity gain
 		let track = buildBackgroundTrack(scaledNoiseBuffer, outSR, rendered.length, rendered.numberOfChannels);
 
 		// 2. Carrier-tracking dip (and a second dip on the separated binaural base)
@@ -578,7 +570,45 @@ async function generateAudio(options) {
 			track = await applyCarrierDip(track, sequence, startingCarrier, dipDb, offsets);
 		}
 
-		// 3. Add with the master fade envelope (same shape as the Tone.js master gain)
+		// 3. Level: normalise the DIPPED track so its active RMS hits the target, with
+		//    transients rounded off by a soft clipper instead of a gain-riding limiter.
+		//    (A limiter with a 50 ms release turns every raindrop into a 60 ms hole in the
+		//    gain — amplitude modulation at 5–20 Hz, which is the last thing an
+		//    entrainment session needs. The clipper only touches the samples above the
+		//    knee, so the surrounding signal is left alone.) Two passes converge on the
+		//    target because clipping itself removes a little energy.
+		const unity = [];
+		for (let ch = 0; ch < track.numberOfChannels; ch++) unity.push(Float32Array.from(track.getChannelData(ch)));
+		const dipActive = getActiveRms(track);
+		let scale = Math.min(targetVolume / Math.max(dipActive.rms, 1e-6), maxNormalisationScale);
+		if (targetVolume / Math.max(dipActive.rms, 1e-6) > maxNormalisationScale) {
+			console.log(`  Normalisation scale ${(targetVolume / dipActive.rms).toFixed(1)}x capped to ${maxNormalisationScale}x (extremely quiet source)`);
+		}
+		let clipStats = null;
+		for (let pass = 0; pass < 2; pass++) {
+			for (let ch = 0; ch < track.numberOfChannels; ch++) {
+				const dst = track.getChannelData(ch), src = unity[ch];
+				for (let i = 0; i < dst.length; i++) dst[i] = src[i] * scale;
+			}
+			clipStats = softClipBuffer(track, softClipKnee, peakCeiling);
+			const got = getActiveRms(track).rms;
+			const errDb = 20 * Math.log10(got / targetVolume);
+			console.log(`  Level pass ${pass + 1}: x${scale.toFixed(3)} → active RMS ${got.toFixed(4)} (${errDb >= 0 ? '+' : ''}${errDb.toFixed(2)} dB from target ${targetVolume}); soft clip on ${clipStats.clippedPct.toFixed(2)}% of samples, max input ${clipStats.maxIn.toFixed(2)}`);
+			if (Math.abs(errDb) < 0.3 || pass === 1) break;
+			scale = Math.min(scale * targetVolume / Math.max(got, 1e-6), maxNormalisationScale);
+		}
+
+		// 4. Safety limiter (idle by construction: the clipper never exceeds the ceiling)
+		const prePeak = getMaxVolume(track);
+		if (prePeak > peakCeiling + 0.001) {
+			const st = truePeakLimiter(track, peakCeiling, 0.01);
+			console.log(`  Safety limiter: peak ${prePeak.toFixed(3)} → reduced on ${st.reducedPct.toFixed(1)}% of samples, max ${st.maxReductionDb.toFixed(1)} dB`);
+		}
+		const finalRms = getRms(track), finalActive = getActiveRms(track).rms;
+		const toneRms = isochronicVolume * punchEnvelopeRms(punchExponent) * Math.SQRT1_2;
+		console.log(`  Background final: RMS=${finalRms.toFixed(4)}, active RMS=${finalActive.toFixed(4)}, peak=${getMaxVolume(track).toFixed(3)} | isochronic tone RMS ${toneRms.toFixed(4)} → tone is ${(20 * Math.log10(toneRms / Math.max(finalActive, 1e-6))).toFixed(1)} dB relative to the background`);
+
+		// 5. Add with the master fade envelope (same shape as the Tone.js master gain)
 		for (let ch = 0; ch < rendered.numberOfChannels; ch++) {
 			const outData = rendered.getChannelData(ch);
 			const bg = track.getChannelData(ch);

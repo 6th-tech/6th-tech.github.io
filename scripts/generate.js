@@ -84,6 +84,7 @@ function runPreflight() {
 	const report = AudioAnalysis.analyzeBackground(decodedNoiseBuffer, sequence, {
 		targetVolume: parseFloat(document.getElementById("noiseVolume").value),
 		isochronicVolume: parseFloat(document.getElementById("isochronicVolume").value),
+		isochronicPunch: parseFloat(document.getElementById("isochronicPunch").value),
 		useBinaural: useBinauralCheckbox.checked,
 		binauralCarrierOffset: parseFloat(document.getElementById("binauralCarrierOffset").value),
 		carrierDipDb: parseFloat(document.getElementById("carrierDipDb").value)
