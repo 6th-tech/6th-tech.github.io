@@ -24,7 +24,7 @@ A **pre-flight analyzer** (`scripts/audio-analysis.js`, offline twin `scripts/an
 Background source
   │  custom music: the decoded file
   │  noise: Tone.Offline renders white/pink/brown for the session length,
-  │         optionally through a 2–15 kHz lowpass sweep (8-minute cycle)
+  │         optionally through a 200–1212 Hz lowpass sweep (16 s cycle, "noise modulation")
   │
   ├─ Isochronic volume boost (custom music only, up to 30% for loudly mastered sources)
   │    └─ Gradual ramp based on the source's active RMS (0.10–0.20)
@@ -195,9 +195,9 @@ Both generator pages run it automatically (checkbox "Pre-flight background analy
 
 Selection rules that follow from the metrics: no sustained pitch between 150 and 950 Hz (no drones, pads, bowls, chimes, flute, piano, vocals in that register); no tempo (drums, arpeggios, pulsing synths); broadband textures (rain, wind, stream, surf, fire) pass by construction; centred stereo for binaural sessions; mastered at a sane level (RMS > 0.05, mostly active) so normalization stays moderate.
 
-### 1i. Noise Sessions: AutoFilter Sweep
+### 1i. Noise Sessions: AutoFilter Sweep ("noise modulation")
 
-The "modulated noise" option is a `Tone.AutoFilter` lowpass sweep. Two Tone.js pitfalls shaped the previous behaviour: `AutoFilter` reads only `frequency`, `baseFrequency`, `octaves` and `filter`, so the `min`/`max`/`Q` options that used to be passed were ignored (it swept its defaults, 200 → 1212 Hz, straight across the carrier range), and the rate `"8m"` means eight *measures* in Tone's notation — 16 s at the default 120 BPM — not eight minutes. Both were confirmed by inspecting the live object in a headless render. The filter is now created with `frequency: 1/480`, `baseFrequency: 2000`, `octaves: log2(15000/2000)` and `filter: { type: "lowpass", rolloff: -12, Q: 0.5 }`, i.e. the intended 2–15 kHz sweep with one full cycle every 8 minutes. The noise then goes through the shared background chain above.
+The "modulated noise" option is a `Tone.AutoFilter` lowpass sweep: **200 Hz → 1212 Hz and back, one cycle every 16 s**, Q 1, −12 dB/oct (about 30 dB of level swing in the 1–4 kHz region, 15 dB around 300–600 Hz). Two Tone.js pitfalls made the original code produce this by accident rather than by design: `AutoFilter` reads only `frequency`, `baseFrequency`, `octaves` and `filter`, so the `min: 2000, max: 15000, Q: 0.5` it used to be given were ignored (it swept its defaults, 200 Hz and 2.6 octaves), and the rate `"8m"` means eight *measures* in Tone's notation — 16 s at the default 120 BPM — not eight minutes. A faithful 2–15 kHz sweep over 8 minutes was implemented and shipped briefly, and turned out to be inaudible as modulation: the sessions sounded like a constant bed of noise. Since the 16 s sweep across the low-mid range is the sound every shipped noise session has had, it is now set explicitly (`noiseSweepPeriod`, `noiseSweepLowHz`, `noiseSweepHighHz`) so it is deliberate and stable. Built-in noise always takes the noise-like transient path (soft clipper); the carrier dip keeps the tone's band clear wherever the sweep is.
 
 ### 2. True Peak Limiter
 
@@ -315,6 +315,7 @@ Every session logs a detailed processing chain to the console:
 | `finalBuffer` | 3s | Silence appended after fade-out |
 | `defaultBackgroundVolume` | 0.25 | Target active RMS of the background as heard, after dip and transient treatment (music and noise) |
 | `softClipKnee` / `peakCeiling` | 0.6 / 0.85 | Soft clipper (noise-like backgrounds): identity below the knee, tanh up to the ceiling; the ceiling is also the limiter's |
+| `noiseSweepPeriod` / `noiseSweepLowHz` / `noiseSweepHighHz` | 16 s / 200 / 1212 | Built-in noise lowpass sweep ("noise modulation") |
 | `noiseLikeFlatness` | 0.15 | Spectral flatness (300–8000 Hz) at or above which a background is clipped rather than limited |
 | `maxPeakOvershootDb` | 6 | Musical backgrounds: max overshoot of the 99.9th percentile above the ceiling before limiting |
 | `defaultNoiseVolume` | 0.7 | Legacy; no longer used for level (noise is normalized like music) |

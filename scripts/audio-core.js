@@ -13,6 +13,9 @@ const defaultCarrierDipDb = 12;      // dB carved out of the background around t
 const maxNormalisationScale = 40;   // cap on active-RMS normalisation gain (was 4 on global RMS)
 const softClipKnee = 0.6;           // samples above this are rounded off smoothly …
 const peakCeiling = 0.85;           // … and never exceed this
+const noiseSweepPeriod = 16;        // s per full lowpass sweep cycle of the built-in noise ("noise modulation")
+const noiseSweepLowHz = 200;        // sweep bottom …
+const noiseSweepHighHz = 1212;      // … and top (2.6 octaves above)
 const noiseLikeFlatness = 0.15;     // spectral flatness (300–8000 Hz) at or above which a background counts as noise-like (clipper instead of limiter)
 const maxPeakOvershootDb = 6;       // musical backgrounds: the loudest 0.1% of samples may exceed the ceiling by at most this much before limiting (keeps the limiter on transients only; rare spikes are left to it)
 
@@ -134,15 +137,17 @@ async function renderNoiseBackground(noiseType, useNoiseModulation, durationSec,
 		const out = new Tone.Gain(1).toDestination();
 		let filter = null;
 		if (useNoiseModulation) {
-			// Slow lowpass sweep 2000 Hz -> 15000 Hz and back, one full cycle every
-			// 8 minutes. NOTE: Tone.AutoFilter only reads frequency / baseFrequency /
-			// octaves / filter — the previous `min/max/Q` options were silently
-			// ignored (it swept 200–1212 Hz), and "8m" meant 8 *measures* (16 s).
+			// Audible lowpass sweep 200 Hz -> 1212 Hz and back, one full cycle every 16 s.
+			// This is the modulation the shipped sessions have always had: Tone.AutoFilter
+			// silently ignored the min/max/Q options it used to be given and swept its
+			// defaults (200 Hz, 2.6 octaves) at "8m" = 8 measures = 16 s. Those values are
+			// now set explicitly so the behaviour is deliberate and stable. (A 2–15 kHz
+			// sweep over 8 minutes was tried and is inaudible as modulation.)
 			filter = new Tone.AutoFilter({
-				frequency: 1 / 480,
-				baseFrequency: 2000,
-				octaves: Math.log2(15000 / 2000),
-				filter: { type: "lowpass", rolloff: -12, Q: 0.5 }
+				frequency: 1 / noiseSweepPeriod,
+				baseFrequency: noiseSweepLowHz,
+				octaves: Math.log2(noiseSweepHighHz / noiseSweepLowHz),
+				filter: { type: "lowpass", rolloff: -12, Q: 1 }
 			}).connect(out);
 			filter.start(0);
 		}
@@ -394,7 +399,7 @@ async function generateAudio(options) {
 
 	// Session details log
 	const isCustomMusic = !!decodedNoiseBuffer;
-	const backgroundType = isCustomMusic ? 'custom music' : `${noiseType} noise${useNoiseModulation ? ' (2–15 kHz lowpass sweep, 8 min cycle)' : ''}`;
+	const backgroundType = isCustomMusic ? 'custom music' : `${noiseType} noise${useNoiseModulation ? ` (lowpass sweep ${noiseSweepLowHz}–${noiseSweepHighHz} Hz, ${noiseSweepPeriod} s cycle)` : ''}`;
 	console.log(`--- Session config ---`);
 	console.log(`  Background: ${backgroundType}`);
 	console.log(`  Starting carrier: ${startingCarrier}Hz | Isochronic: ${muteIsochronic ? 'muted' : isochronicVolume} (carrier-tracked equal-loudness ×1.0–1.3, punch ^${punchExponent})`);
@@ -651,9 +656,11 @@ async function generateAudio(options) {
 		//    Two passes converge on the target because both treatments remove energy.
 		const unity = [];
 		for (let ch = 0; ch < track.numberOfChannels; ch++) unity.push(Float32Array.from(track.getChannelData(ch)));
-		const flatness = spectralFlatness(track);
-		const noiseLike = flatness >= noiseLikeFlatness;
-		console.log(`  Background character: spectral flatness ${flatness.toFixed(3)} → ${noiseLike ? 'noise-like, transients soft-clipped' : 'musical, transients limited'}`);
+		// Built-in noise is noise-like by definition (its sweep and spectral tilt would fool
+		// the flatness measure); custom files are classified by spectral flatness.
+		const flatness = isCustomMusic ? spectralFlatness(track) : 1;
+		const noiseLike = !isCustomMusic || flatness >= noiseLikeFlatness;
+		console.log(`  Background character: ${isCustomMusic ? `spectral flatness ${flatness.toFixed(3)} → ` : 'built-in noise → '}${noiseLike ? 'noise-like, transients soft-clipped' : 'musical, transients limited'}`);
 		const dipActive = getActiveRms(track);
 		// Musical material: the limiter must stay a transient tool, so the 99.9th percentile
 		// of |x| may exceed the ceiling by at most maxPeakOvershootDb before limiting (the max
