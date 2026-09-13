@@ -25,7 +25,7 @@ const OPTS = {
 	binauralCarrierOffset: parseFloat(arg('offset', '150')),
 	carrierDipDb: parseFloat(arg('dip', '12')),
 	isochronicVolume: parseFloat(arg('iso', '0.35')),
-	targetVolume: parseFloat(arg('bg-volume', '0.5'))
+	targetVolume: parseFloat(arg('bg-volume', '0.25'))
 };
 
 function findPlaywright() {

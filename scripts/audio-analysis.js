@@ -151,7 +151,7 @@ const AudioAnalysis = (() => {
 
 	function analyzeBackground(buffer, sequence, options) {
 		const o = Object.assign({
-			targetVolume: 0.3, maxScale: 40, isochronicVolume: 0.35, isochronicPunch: 1, binauralVolume: 0.16,
+			targetVolume: 0.25, maxScale: 40, isochronicVolume: 0.35, isochronicPunch: 1, binauralVolume: 0.16,
 			useBinaural: false, binauralCarrierOffset: 0, carrierDipDb: 12, isCustomMusic: true,
 			softClipKnee: 0.6, peakCeiling: 0.85
 		}, options || {});

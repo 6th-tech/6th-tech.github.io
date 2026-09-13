@@ -32,7 +32,7 @@ FS_ENV = FS / ENV_DEC
 SOUNDS = os.environ.get("SOUNDS", "/Users/smanuel/Desktop/Used Sounds")
 SESSIONS = os.environ.get("SESSIONS", "/Users/smanuel/Work/sixth/sixth-mind/assets/default_sessions.json")
 
-ISO_VOL = float(os.environ.get("ISO", 0.35)); BIN_VOL = 0.16; TARGET_RMS = float(os.environ.get("TARGET", 0.3))  # target ACTIVE RMS after dip + clipping
+ISO_VOL = float(os.environ.get("ISO", 0.35)); BIN_VOL = 0.16; TARGET_RMS = float(os.environ.get("TARGET", 0.25))  # target ACTIVE RMS after dip + transient treatment
 PUNCH = float(os.environ.get("PUNCH", 2)); SOFT_KNEE, PEAK_CEIL = 0.6, 0.85
 MAX_SCALE = float(os.environ.get("CAP", 40))       # normalisation scale cap (generator: 40)
 DUCK_DB = float(os.environ.get("DUCK_DB", 12))      # carrier-tracking dip carved out of the music (generator: 12)

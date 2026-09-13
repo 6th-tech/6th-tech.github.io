@@ -48,9 +48,9 @@
 
 		<div class="input-section">
 			<label for="noiseVolume">Background Sound Volume:</label>
-			<input type="number" id="noiseVolume" value="0.3" min="0" max="1" step="0.05" />
+			<input type="number" id="noiseVolume" value="0.25" min="0" max="1" step="0.05" />
 			<div class="help-text">
-				Target loudness of the background as heard (active RMS after the carrier dip and transient clipping). 0.3 sits about 7 dB above the isochronic tone; every session lands at the same level regardless of how the file was mastered.
+				Target loudness of the background as heard (active RMS after the carrier dip and transient treatment). 0.25 sits about 6 dB above the isochronic tone. Every session lands at this level unless its peaks would need more than 6 dB of limiting, in which case it stays a little lower to keep the music undistorted (the console says by how much).
 			</div>
 		</div>
 

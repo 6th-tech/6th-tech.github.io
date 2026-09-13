@@ -3,7 +3,7 @@
 //
 //   node scripts/batch/regen-sessions.js --sessions <sessions.json> --sounds <dir[,dir...]> --out <dir>
 //        [--only "Healing vibes,sleep_well"] [--long-only | --short-only]
-//        [--binaural 1] [--offset 150] [--dip 12] [--iso 0.35] [--punch 2] [--bg-volume 0.5] [--main 0.7]
+//        [--binaural 1] [--offset 150] [--dip 12] [--iso 0.35] [--punch 2] [--bg-volume 0.25] [--main 0.7]
 //        [--rate 48000] [--playwright <playwright-core dir>] [--chrome <headless_shell executable>]
 //
 // What it does: starts a small local HTTP server that serves this repo (generate.html +
@@ -43,7 +43,7 @@ const OPTS = {
 	carrierDipDb: parseFloat(arg('dip', '12')),
 	isochronicVolume: parseFloat(arg('iso', '0.35')),
 	isochronicPunch: parseFloat(arg('punch', '2')),
-	customNoiseVolume: parseFloat(arg('bg-volume', '0.5')),
+	customNoiseVolume: parseFloat(arg('bg-volume', '0.25')),
 	mainVolume: parseFloat(arg('main', '0.7')),
 	outputSampleRate: parseInt(arg('rate', '48000'), 10)
 };

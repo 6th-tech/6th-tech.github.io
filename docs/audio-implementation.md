@@ -40,14 +40,21 @@ Background source
   │    └─ Web Audio peaking BiquadFilter with frequency/Q automation; second dip on
   │       the separated binaural base carrier when carrier separation is on
   │
-  ├─ Level: active-RMS normalization of the DIPPED track (target = customNoiseVolume, 0.3)
+  ├─ Level: active-RMS normalization of the DIPPED track (target = customNoiseVolume, 0.25)
   │    └─ The target is the level the listener hears — after the dip — so every session
   │       lands at the same background loudness whatever the file's mastering or how
   │       much of its energy sat in the carrier band. Scale capped at 40x (guard only).
+  │       Musical tracks: additionally capped so the loudest 0.1% of samples exceed the
+  │       ceiling by ≤ 6 dB (limiting stays on transients; the console reports the shortfall)
   │
-  ├─ Soft clipper (knee 0.6 → ceiling 0.85, tanh) — transients only
-  │    └─ Rounds off the samples above the knee and nothing else; a second level pass
-  │       corrects for the energy the clipping removed (converges within 0.3 dB)
+  ├─ Transients, by background character (spectral flatness over 300–8000 Hz ≥ 0.15 = noise-like)
+  │    ├─ noise-like (rain, surf, fire, wind, built-in noise): soft clipper (knee 0.6 → 0.85)
+  │    │    └─ Touches only samples above the knee; a limiter would turn every raindrop
+  │    │       into a 60 ms hole in the gain (AM at 5–20 Hz)
+  │    └─ musical: true-peak limiter, 10 ms look-ahead, program-dependent release
+  │         └─ Clipping the attack of a plucked or struck note is audible as a click;
+  │            short overs release in 15 ms, sustained ones in 80 ms
+  │    A second level pass corrects for the energy either treatment removed (within 0.3 dB)
   │
   ├─ Safety limiter (idle by construction; logs if it ever engages)
   │
@@ -63,7 +70,7 @@ Background source
 |-----------|-------|-------|
 | Isochronic tones | 0.35 base | ×1.0–1.3 carrier-tracked equal-loudness; up to +30% for loudly mastered music; optional pulse-punch shaping |
 | Binaural beats | 0.16 base | Per-channel, stereo panned L/R; ×1.0–1.3 carrier-tracked; ×1.4 during SI-DO emphasis; optional carrier separation |
-| Background (music or noise) | 0.30 | Target *active* RMS as heard (after the dip and clipping) — same chain for both; ≈ 7 dB above the isochronic tone |
+| Background (music or noise) | 0.25 | Target *active* RMS as heard (after the dip and transient treatment) — same chain for both; ≈ 6 dB above the isochronic tone (0.35 × punch-2 envelope ≈ 0.13 RMS) |
 | Carrier dip | −12 dB | One ERB wide, centred on the carrier, tracks the carrier ramps (`carrierDipDb`, 0 = off) |
 | Master gain | 0.70 | `mainVolume`, capped at 0.89 headroom |
 | Fade in/out | 10s each | Linear ramp on master gain |
@@ -73,18 +80,23 @@ Background source
 
 ### 1. Level: Active-RMS Normalization of the Dipped Track
 
-The background's level is set **after** the carrier dip, on the session-length track, so the target (`customNoiseVolume`, default **0.3**) is the active RMS the listener actually hears. The reference is the **active RMS** — the RMS of samples above the 0.01 silence threshold — not the global RMS, so sparse or quietly mastered recordings (rain, streams, birds at RMS ≈ 0.01) reach the same level as dense ones. Two things made the earlier arrangement (normalize the source to 0.5, limit, then dip) inconsistent: a true-peak limiter working on nearly every sample took 3–8 dB off high-crest material, and the dip removed a further chunk from tracks whose energy sits in the carrier band, so the final level varied by several dB between sessions with the same nominal setting.
+The background's level is set **after** the carrier dip, on the session-length track, so the target (`customNoiseVolume`, default **0.25**) is the active RMS the listener actually hears. The reference is the **active RMS** — the RMS of samples above the 0.01 silence threshold — not the global RMS, so sparse or quietly mastered recordings (rain, streams, birds at RMS ≈ 0.01) reach the same level as dense ones. Two things made the earlier arrangement (normalize the source to 0.5, limit, then dip) inconsistent: a true-peak limiter working on nearly every sample took 3–8 dB off high-crest material, and the dip removed a further chunk from tracks whose energy sits in the carrier band, so the final level varied by several dB between sessions with the same nominal setting.
 
-**Transients**: instead of a gain-riding limiter, the normalized track goes through a soft clipper (identity below 0.6, tanh curve up to a 0.85 ceiling). Only the samples above the knee are touched — a limiter with a 50 ms release turns every raindrop into a 60 ms hole in the gain, i.e. amplitude modulation at 5–20 Hz, which is the last thing an entrainment session needs. Because clipping removes a little energy, a second pass corrects the scale (converges within 0.3 dB; both passes and the clipped percentage are logged). At the 0.3 target the clipper touches 2–6% of samples; at 0.4 it is 13–14%, which is why 0.3 is the default and 0.35 the sensible maximum. The old true-peak limiter remains as a safety net and is idle by construction.
+**Transients** depend on what the background is, decided by its spectral flatness (median Wiener entropy over 300–8000 Hz, so a recording's low rumble cannot hide a broadband crackle; rain 0.49, fire 0.31, surf 0.17–0.21, rock 0.13, birdsong 0.05–0.09, other music 0.000–0.04; threshold 0.15):
+
+- *Noise-like*: a soft clipper (identity below 0.6, tanh curve up to the 0.85 ceiling). Its transients are noise bursts, so rounding them is inaudible, and only the samples above the knee are touched — a gain-riding limiter turned every raindrop into a 60 ms hole in the gain, i.e. amplitude modulation at 5–20 Hz, the last thing an entrainment session needs.
+- *Musical*: the true-peak limiter (10 ms look-ahead, 1.5 ms attack) with a program-dependent release — 15 ms after a short over-run such as a plucked note or a drum hit, 80 ms after a sustained one; overs closer than 25 ms count as one run so the cycles of a bass note never get a per-cycle ripple. Clipping the attack of a note is audible as a click, which is why music is not clipped.
+
+Because both treatments remove a little energy, a second pass corrects the scale (converges within 0.3 dB; the passes and the treated percentage are logged). For musical tracks the scale is additionally capped so that the 99.9th percentile of |x| exceeds the ceiling by at most 6 dB: the limiter must stay a transient tool, never the loudness maker. Only very spiky recordings hit the cap (a sparse birdsong file sits about 3.5 dB below target); the console reports the shortfall. The old limiter call after the level stage is a safety net and idle by construction.
 
 **Scale cap**: 40x, a guard against pathological files only.
 
 ```
-scale = min(targetVolume / activeRms(dippedTrack), 40)
-track = softClip(dippedTrack * scale)          // then one corrective pass
+scale = min(targetVolume / activeRms(dippedTrack), 40[, 0.85·2 / p99.9(|dippedTrack|) for music])
+track = noiseLike ? softClip(dippedTrack * scale) : limit(dippedTrack * scale)   // then one corrective pass
 ```
 
-The console reports the final background RMS, its active RMS and the isochronic tone's RMS relative to it (≈ −7 dB at the defaults). Built-in noise goes through exactly the same chain (it is rendered up front by a tones-free `Tone.Offline`), so noise sessions and music sessions share one loudness rule. Previously the noise sat inside the tone render at a fixed 0.7 gain and, because of the AutoFilter misconfiguration described in 1i, ended up at 0.065–0.10 RMS — quieter than the tone.
+The console reports the character decision, the final background RMS, its active RMS and the isochronic tone's RMS relative to it (≈ −6 dB at the defaults). Built-in noise goes through exactly the same chain (it is rendered up front by a tones-free `Tone.Offline`), so noise sessions and music sessions share one loudness rule. Previously the noise sat inside the tone render at a fixed 0.7 gain and, because of the AutoFilter misconfiguration described in 1i, ended up at 0.065–0.10 RMS — quieter than the tone.
 
 ### 1b. Carrier Frequency Compensation
 
@@ -301,16 +313,18 @@ Every session logs a detailed processing chain to the console:
 | `fadeOut` | 10s | Session fade-out duration |
 | `noiseFade` | 3s | Loop boundary fade duration |
 | `finalBuffer` | 3s | Silence appended after fade-out |
-| `defaultBackgroundVolume` | 0.3 | Target active RMS of the background as heard, after dip and clipping (music and noise) |
-| `softClipKnee` / `peakCeiling` | 0.6 / 0.85 | Soft clipper: identity below the knee, tanh up to the ceiling |
+| `defaultBackgroundVolume` | 0.25 | Target active RMS of the background as heard, after dip and transient treatment (music and noise) |
+| `softClipKnee` / `peakCeiling` | 0.6 / 0.85 | Soft clipper (noise-like backgrounds): identity below the knee, tanh up to the ceiling; the ceiling is also the limiter's |
+| `noiseLikeFlatness` | 0.15 | Spectral flatness (300–8000 Hz) at or above which a background is clipped rather than limited |
+| `maxPeakOvershootDb` | 6 | Musical backgrounds: max overshoot of the 99.9th percentile above the ceiling before limiting |
 | `defaultNoiseVolume` | 0.7 | Legacy; no longer used for level (noise is normalized like music) |
 | `maxNormalisationScale` | 40 | Maximum active-RMS normalization multiplier |
 | `defaultCarrierDipDb` | 12 | Depth of the carrier-tracking dip (dB); 0 disables |
 | Limiter ceiling | 0.85 | Safety limiter ceiling (normally idle) |
 | Safety ceiling | 0.95 | Absolute maximum before Tone.js mix |
 | Headroom cap | 0.89 | Master gain never exceeds this |
-| Attack time | 2ms | Limiter gain reduction smoothing |
-| Release time | 50ms | Limiter gain recovery smoothing |
+| Attack time | 1.5ms | Limiter gain reduction smoothing |
+| Release time | 15ms / 80ms | Limiter gain recovery after a short (≤ 20 ms) / sustained over-run |
 | Look-ahead | 10ms | Limiter anticipation window |
 | Silence threshold | 0.01 | Active RMS measurement cutoff |
 

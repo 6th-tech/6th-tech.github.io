@@ -7,12 +7,14 @@ const fadeIn = 10; // sec
 const fadeOut = 10; // sec
 const noiseFade = 3; // sec
 const finalBuffer = 3; // sec
-const defaultBackgroundVolume = 0.3;   // target ACTIVE RMS of the background as heard (after dip and clipping)
+const defaultBackgroundVolume = 0.25;  // target ACTIVE RMS of the background as heard (after dip and limiting); ≈ 5.7 dB above the isochronic tone
 const defaultNoiseVolume = 0.7; // legacy: built-in noise now goes through the same normalisation as music
 const defaultCarrierDipDb = 12;      // dB carved out of the background around the carrier (one ERB wide)
 const maxNormalisationScale = 40;   // cap on active-RMS normalisation gain (was 4 on global RMS)
 const softClipKnee = 0.6;           // samples above this are rounded off smoothly …
 const peakCeiling = 0.85;           // … and never exceed this
+const noiseLikeFlatness = 0.15;     // spectral flatness (300–8000 Hz) at or above which a background counts as noise-like (clipper instead of limiter)
+const maxPeakOvershootDb = 6;       // musical backgrounds: the loudest 0.1% of samples may exceed the ceiling by at most this much before limiting (keeps the limiter on transients only; rare spikes are left to it)
 
 // --------- Parsing Functions ---------
 function parseSequence(sequenceText) {
@@ -247,6 +249,72 @@ function softClipBuffer(buffer, knee, ceiling) {
 		}
 	}
 	return { clippedPct: 100 * clipped / Math.max(total, 1), maxIn };
+}
+
+// Spectral flatness (Wiener entropy) of a buffer over 300–8000 Hz, 0..1: white noise ≈ 1,
+// rain ≈ 0.5, fire ≈ 0.3, surf ≈ 0.2, music ≈ 0.00–0.13 (the band starts at 300 Hz so a
+// recording's low rumble cannot mask a broadband crackle). Used to pick the transient treatment: noise-like
+// backgrounds are soft-clipped (their transients are noise bursts, clipping is inaudible
+// and never pumps), musical ones go through the limiter (clipping a plucked or struck
+// note's attack is audible as a click).
+function spectralFlatness(buffer) {
+	const n = 4096, sr = buffer.sampleRate, ch0 = buffer.getChannelData(0);
+	const frames = 24, hop = Math.max(n, Math.floor((buffer.length - n) / frames));
+	const re = new Float64Array(n), im = new Float64Array(n);
+	const kLo = Math.max(1, Math.round(300 / sr * n)), kHi = Math.min(n / 2, Math.round(8000 / sr * n));
+	const vals = [];
+	for (let f = 0; f < frames; f++) {
+		const s0 = f * hop;
+		if (s0 + n > buffer.length) break;
+		let energy = 0;
+		for (let i = 0; i < n; i++) { const w = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / n); re[i] = ch0[s0 + i] * w; im[i] = 0; energy += re[i] * re[i]; }
+		if (energy < 1e-6) continue; // skip silence
+		fftInPlace(re, im);
+		let logSum = 0, linSum = 0, cnt = 0;
+		for (let k = kLo; k < kHi; k++) { const pw = re[k] * re[k] + im[k] * im[k] + 1e-12; logSum += Math.log(pw); linSum += pw; cnt++; }
+		vals.push(Math.exp(logSum / cnt) / (linSum / cnt));
+	}
+	if (!vals.length) return 0;
+	vals.sort((a, b) => a - b);
+	return vals[vals.length >> 1];
+}
+
+function fftInPlace(re, im) {
+	const n = re.length;
+	for (let i = 1, j = 0; i < n; i++) {
+		let bit = n >> 1;
+		for (; j & bit; bit >>= 1) j ^= bit;
+		j ^= bit;
+		if (i < j) { let t = re[i]; re[i] = re[j]; re[j] = t; t = im[i]; im[i] = im[j]; im[j] = t; }
+	}
+	for (let len = 2; len <= n; len <<= 1) {
+		const ang = -2 * Math.PI / len, wr = Math.cos(ang), wi = Math.sin(ang), half = len >> 1;
+		for (let i = 0; i < n; i += len) {
+			let cr = 1, ci = 0;
+			for (let k = 0; k < half; k++) {
+				const a = i + k, b = a + half;
+				const vr = re[b] * cr - im[b] * ci, vi = re[b] * ci + im[b] * cr;
+				re[b] = re[a] - vr; im[b] = im[a] - vi; re[a] += vr; im[a] += vi;
+				const t = cr * wr - ci * wi; ci = cr * wi + ci * wr; cr = t;
+			}
+		}
+	}
+}
+
+// p-th quantile of |x| over all channels (sub-sampled every 4th sample; plenty for a
+// level decision and keeps the sort cheap on an 11-minute stereo track).
+function percentileAbs(buffer, p) {
+	const step = 4;
+	let n = 0;
+	for (let ch = 0; ch < buffer.numberOfChannels; ch++) n += Math.floor(buffer.length / step);
+	const a = new Float32Array(n);
+	let k = 0;
+	for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
+		const d = buffer.getChannelData(ch);
+		for (let i = 0; i < buffer.length; i += step) a[k++] = Math.abs(d[i]);
+	}
+	a.sort();
+	return a[Math.min(a.length - 1, Math.floor(p * a.length))];
 }
 
 // RMS of the isochronic pulse envelope (0.5(1+sin))^p, used for level reporting
@@ -570,37 +638,61 @@ async function generateAudio(options) {
 			track = await applyCarrierDip(track, sequence, startingCarrier, dipDb, offsets);
 		}
 
-		// 3. Level: normalise the DIPPED track so its active RMS hits the target, with
-		//    transients rounded off by a soft clipper instead of a gain-riding limiter.
-		//    (A limiter with a 50 ms release turns every raindrop into a 60 ms hole in the
-		//    gain — amplitude modulation at 5–20 Hz, which is the last thing an
-		//    entrainment session needs. The clipper only touches the samples above the
-		//    knee, so the surrounding signal is left alone.) Two passes converge on the
-		//    target because clipping itself removes a little energy.
+		// 3. Level: normalise the DIPPED track so its active RMS hits the target. The
+		//    transient treatment depends on what the background is:
+		//    - noise-like (rain, surf, fire, wind, built-in noise): soft clipper. Its
+		//      transients are noise bursts, so rounding them off is inaudible, and a
+		//      clipper never modulates the surrounding signal (a limiter with a 50 ms
+		//      release turned every raindrop into a 60 ms hole in the gain — amplitude
+		//      modulation at 5–20 Hz).
+		//    - musical: true-peak limiter with a program-dependent release (fast after a
+		//      short peak such as a plucked note, slow after a sustained one), because
+		//      clipping the attack of a note is audible as a click.
+		//    Two passes converge on the target because both treatments remove energy.
 		const unity = [];
 		for (let ch = 0; ch < track.numberOfChannels; ch++) unity.push(Float32Array.from(track.getChannelData(ch)));
+		const flatness = spectralFlatness(track);
+		const noiseLike = flatness >= noiseLikeFlatness;
+		console.log(`  Background character: spectral flatness ${flatness.toFixed(3)} → ${noiseLike ? 'noise-like, transients soft-clipped' : 'musical, transients limited'}`);
 		const dipActive = getActiveRms(track);
-		let scale = Math.min(targetVolume / Math.max(dipActive.rms, 1e-6), maxNormalisationScale);
-		if (targetVolume / Math.max(dipActive.rms, 1e-6) > maxNormalisationScale) {
-			console.log(`  Normalisation scale ${(targetVolume / dipActive.rms).toFixed(1)}x capped to ${maxNormalisationScale}x (extremely quiet source)`);
+		// Musical material: the limiter must stay a transient tool, so the 99.9th percentile
+		// of |x| may exceed the ceiling by at most maxPeakOvershootDb before limiting (the max
+		// would let a single spike decide the level of the whole session). A track with a
+		// very high crest factor therefore lands somewhat below the target instead of being
+		// crushed, and the console says by how much.
+		const dipPeak = noiseLike ? getMaxVolume(track) : percentileAbs(track, 0.999);
+		const overshootCap = noiseLike ? Infinity : (peakCeiling * Math.pow(10, maxPeakOvershootDb / 20)) / Math.max(dipPeak, 1e-6);
+		const wanted = targetVolume / Math.max(dipActive.rms, 1e-6);
+		let scale = Math.min(wanted, maxNormalisationScale, overshootCap);
+		if (wanted > maxNormalisationScale) {
+			console.log(`  Normalisation scale ${wanted.toFixed(1)}x capped to ${maxNormalisationScale}x (extremely quiet source)`);
 		}
-		let clipStats = null;
+		if (scale === overshootCap && overshootCap < wanted) {
+			console.log(`  Normalisation scale ${wanted.toFixed(2)}x capped to ${overshootCap.toFixed(2)}x so the loudest 0.1% of samples exceed the ceiling by ≤ ${maxPeakOvershootDb} dB (crest factor at p99.9: ${(20 * Math.log10(dipPeak / Math.max(dipActive.rms, 1e-6))).toFixed(1)} dB) — background will sit ${(20 * Math.log10(overshootCap / wanted)).toFixed(1)} dB below the target`);
+		}
 		for (let pass = 0; pass < 2; pass++) {
 			for (let ch = 0; ch < track.numberOfChannels; ch++) {
 				const dst = track.getChannelData(ch), src = unity[ch];
 				for (let i = 0; i < dst.length; i++) dst[i] = src[i] * scale;
 			}
-			clipStats = softClipBuffer(track, softClipKnee, peakCeiling);
+			let treat;
+			if (noiseLike) {
+				const c = softClipBuffer(track, softClipKnee, peakCeiling);
+				treat = `soft clip on ${c.clippedPct.toFixed(2)}% of samples, max input ${c.maxIn.toFixed(2)}`;
+			} else {
+				const st = truePeakLimiter(track, peakCeiling, 0.01);
+				treat = `limiter on ${st.reducedPct.toFixed(2)}% of samples, mean ${st.meanReductionDb.toFixed(1)} dB, max ${st.maxReductionDb.toFixed(1)} dB`;
+			}
 			const got = getActiveRms(track).rms;
 			const errDb = 20 * Math.log10(got / targetVolume);
-			console.log(`  Level pass ${pass + 1}: x${scale.toFixed(3)} → active RMS ${got.toFixed(4)} (${errDb >= 0 ? '+' : ''}${errDb.toFixed(2)} dB from target ${targetVolume}); soft clip on ${clipStats.clippedPct.toFixed(2)}% of samples, max input ${clipStats.maxIn.toFixed(2)}`);
+			console.log(`  Level pass ${pass + 1}: x${scale.toFixed(3)} → active RMS ${got.toFixed(4)} (${errDb >= 0 ? '+' : ''}${errDb.toFixed(2)} dB from target ${targetVolume}); ${treat}`);
 			if (Math.abs(errDb) < 0.3 || pass === 1) break;
-			scale = Math.min(scale * targetVolume / Math.max(got, 1e-6), maxNormalisationScale);
+			scale = Math.min(scale * targetVolume / Math.max(got, 1e-6), maxNormalisationScale, overshootCap);
 		}
 
-		// 4. Safety limiter (idle by construction: the clipper never exceeds the ceiling)
+		// 4. Safety: nothing above may exceed the ceiling, but check anyway
 		const prePeak = getMaxVolume(track);
-		if (prePeak > peakCeiling + 0.001) {
+		if (prePeak > peakCeiling + 0.01) {
 			const st = truePeakLimiter(track, peakCeiling, 0.01);
 			console.log(`  Safety limiter: peak ${prePeak.toFixed(3)} → reduced on ${st.reducedPct.toFixed(1)}% of samples, max ${st.maxReductionDb.toFixed(1)} dB`);
 		}
@@ -675,8 +767,14 @@ function truePeakLimiter(audioBuffer, ceiling, lookAheadSec) {
 	const numChannels = audioBuffer.numberOfChannels;
 	const length = audioBuffer.length;
 	const lookAheadSamples = Math.max(1, Math.round(lookAheadSec * sampleRate));
-	const attackCoeff = Math.exp(-1 / (0.002 * sampleRate));  // 2ms attack
-	const releaseCoeff = Math.exp(-1 / (0.05 * sampleRate));  // 50ms release
+	const attackCoeff = Math.exp(-1 / (0.0015 * sampleRate));       // 1.5 ms attack
+	// Program-dependent release: a short over (a plucked note, a drum hit, a raindrop)
+	// is released quickly so the gain does not leave a hole behind it; a sustained over
+	// is released slowly so the gain does not ripple with the waveform.
+	const fastReleaseCoeff = Math.exp(-1 / (0.015 * sampleRate));   // 15 ms
+	const slowReleaseCoeff = Math.exp(-1 / (0.08 * sampleRate));    // 80 ms
+	const shortRunSamples = Math.round(0.02 * sampleRate);          // an over-run ≤ 20 ms counts as short
+	const runGapSamples = Math.round(0.025 * sampleRate);           // overs closer than this belong to the same run
 
 	// Pass 1: compute instantaneous gain needed at each sample
 	const gainNeeded = new Float32Array(length);
@@ -707,16 +805,24 @@ function truePeakLimiter(audioBuffer, ceiling, lookAheadSec) {
 		lookaheadGain[i] = gainNeeded[deque[dqStart]];
 	}
 
-	// Pass 3: smooth the gain curve with attack AND release to avoid clicks
+	// Pass 3: smooth the gain curve with attack AND release to avoid clicks.
 	// Attack smoothing prevents the hard edge at the look-ahead boundary
-	// (without this, gain drops from 1.0 to 0.2 in one sample = click)
+	// (without this, gain drops from 1.0 to 0.2 in one sample = click). The release
+	// speed depends on how long the signal had been over the ceiling.
+	// An "over-run" is a group of overs separated by gaps shorter than runGapSamples
+	// (so the individual cycles of a bass note that pokes above the ceiling count as one
+	// sustained run and get the slow release, not a per-cycle ripple).
+	let runLen = 0, sinceOver = runGapSamples + 1;
 	for (let i = 1; i < length; i++) {
-		if (lookaheadGain[i] < lookaheadGain[i - 1]) {
-			// Attack: smooth downward transition (2ms)
-			lookaheadGain[i] = attackCoeff * lookaheadGain[i - 1] + (1 - attackCoeff) * lookaheadGain[i];
-		} else if (lookaheadGain[i] > lookaheadGain[i - 1]) {
-			// Release: smooth upward transition (50ms)
-			lookaheadGain[i] = releaseCoeff * lookaheadGain[i - 1] + (1 - releaseCoeff) * lookaheadGain[i];
+		const target = lookaheadGain[i];
+		if (target < 0.999) { runLen = (sinceOver > runGapSamples) ? 1 : runLen + sinceOver + 1; sinceOver = 0; }
+		else { sinceOver++; if (sinceOver > runGapSamples) runLen = 0; }
+		const prev = lookaheadGain[i - 1];
+		if (target < prev) {
+			lookaheadGain[i] = attackCoeff * prev + (1 - attackCoeff) * target;
+		} else if (target > prev) {
+			const rc = (runLen > 0 && runLen <= shortRunSamples) ? fastReleaseCoeff : slowReleaseCoeff;
+			lookaheadGain[i] = rc * prev + (1 - rc) * target;
 		}
 	}
 
