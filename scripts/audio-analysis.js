@@ -169,6 +169,31 @@ const AudioAnalysis = (() => {
 		const activePct = 100 * active / Math.max(total, 1);
 		let isoVol = o.isochronicVolume;
 		if (o.isCustomMusic && activeRms > 0.10) isoVol *= 1 + 0.30 * Math.min((activeRms - 0.10) / 0.10, 1);
+
+		// ---- source quality: how much gain the file needs, how far its noise floor sits
+		//      below its music, and its bandwidth. A quiet, band-limited master brought up
+		//      by 20 dB exposes encoder artefacts and room noise (Cave of Solitude: +24 dB,
+		//      floor −4 dB, 2.5 kHz).
+		const srcQ = (() => {
+			const d0 = buffer.getChannelData(0), n = Math.round(fs0 * 0.1), k = Math.floor(d0.length / n);
+			const fr = new Float64Array(k);
+			for (let j = 0; j < k; j++) { let q = 0; for (let i = j * n; i < (j + 1) * n; i++) q += d0[i] * d0[i]; fr[j] = Math.sqrt(q / n); }
+			const sorted = Float64Array.from(fr).sort();
+			const floor = sorted[Math.floor(0.05 * sorted.length)] || 0;
+			const gainDb = 20 * Math.log10(o.targetVolume / Math.max(activeRms, 1e-6));
+			// bandwidth: highest frequency whose averaged spectrum is within 60 dB of the peak
+			const N = 8192, w = hann(N); let wsum = 0; for (let i = 0; i < N; i++) wsum += w[i];
+			const re = new Float64Array(N), im = new Float64Array(N), acc = new Float64Array(N / 2 + 1);
+			let frames = 0;
+			for (let s0 = 0; s0 + N <= d0.length && frames < 40; s0 += Math.max(N, Math.floor(d0.length / 40))) {
+				const p = powerSpectrum(d0.subarray(s0, s0 + N), w, wsum, re, im);
+				for (let q = 0; q < acc.length; q++) acc[q] += p[q];
+				frames++;
+			}
+			let pk = 0; for (let q = 1; q < acc.length; q++) if (acc[q] > pk) pk = acc[q];
+			let kTop = 0; for (let q = acc.length - 1; q >= 1; q--) if (acc[q] > pk * 1e-6) { kTop = q; break; }
+			return { gainDb, floorDb: 20 * Math.log10(Math.max(floor, 1e-6) / Math.max(activeRms, 1e-6)), bandwidthHz: kTop * fs0 / N };
+		})();
 		// rms of the pulse envelope (0.5(1+sin))^punch
 		let envRms = 0; { const n = 2048; let s = 0; for (let i = 0; i < n; i++) { const e = Math.pow(0.5 * (1 + Math.sin(2 * Math.PI * i / n)), o.isochronicPunch || 1); s += e * e; } envRms = Math.sqrt(s / n); }
 
@@ -312,8 +337,20 @@ const AudioAnalysis = (() => {
 		if (maxStrong >= 10) issues.push(`spurious beats ${maxStrong.toFixed(0)}%`); else if (maxStrong >= 3) issues.push(`mild tonal ${maxStrong.toFixed(0)}%`);
 		if (nConflicts > 0) issues.push(`rhythm at ${nConflicts} beat freq${nConflicts > 1 ? 's' : ''}`);
 		else if (tempo.m >= 0.30 && mixRms >= 0.15) issues.push(`rhythmic (${tempo.f.toFixed(1)} Hz, ${(tempo.m * 100).toFixed(0)}% depth)`);
-		if (mixRms < 0.15) issues.push(`background too quiet (mix RMS ${mixRms.toFixed(2)})`);
 		const notes = [];
+		if (mixRms < 0.15) issues.push(`background too quiet (mix RMS ${mixRms.toFixed(2)})`);
+		if (o.isCustomMusic) {
+			// A quiet AND dull AND noisy master is the combination that fails audibly once it
+			// is brought up (Cave of Solitude: +24 dB, 2.5 kHz, floor −4 dB). Each property on
+			// its own is common in perfectly good files (waves need 20 dB, soft pads roll off
+			// at 4 kHz, sparse recordings have a low floor), so only the combination is an issue.
+			if (srcQ.gainDb > 18 && srcQ.bandwidthHz < 5000 && srcQ.floorDb > -12) {
+				issues.push(`poor source (needs ${srcQ.gainDb.toFixed(0)} dB of gain, bandwidth ${(srcQ.bandwidthHz / 1000).toFixed(1)} kHz, floor only ${(-srcQ.floorDb).toFixed(0)} dB down)`);
+			} else if (srcQ.gainDb > 18) {
+				notes.push(`quiet master, +${srcQ.gainDb.toFixed(0)} dB applied`);
+			}
+		}
+		
 		if (o.useBinaural) {
 			if (maxBin >= 40) issues.push(`binaural masked ${maxBin.toFixed(0)}%`); else if (maxBin >= 15) issues.push(`binaural mild ${maxBin.toFixed(0)}%`);
 			// Informational only: a wide stereo image adds uncorrelated noise around the binaural
@@ -329,7 +366,7 @@ const AudioAnalysis = (() => {
 			`, L/R corr ${c.iacc.toFixed(2)}` +
 			(c.conflicts.length ? `, rhythm: ${c.conflicts.map(k => `${k.beat} Hz@${(k.m * 100).toFixed(0)}%`).join(' ')}` : ''));
 		const summary = `${severity.toUpperCase()}${issues.length ? ': ' + issues.join('; ') : ' (no interference found)'}${notes.length ? ' (note: ' + notes.join('; ') + ')' : ''} — src RMS ${rms.toFixed(3)} (${activePct.toFixed(0)}% active) ×${scale.toFixed(1)} → mix ${mixRms.toFixed(2)}`;
-		return { severity, issues, notes, summary, lines, mixRms, scale, activePct, tempo, perCarrier };
+		return { severity, issues, notes, summary, lines, mixRms, scale, activePct, tempo, perCarrier, source: srcQ };
 	}
 
 	return { analyzeBackground };

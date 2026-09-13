@@ -190,8 +190,11 @@ Measured effect on the audited sessions (normalization fix + 12 dB dip): isochro
 | level | mix RMS after normalization | mild when < 0.15 |
 | binaural | same masking test against the binaural level, in its own (possibly separated) band | masked ≥ 40% (mild ≥ 15%) |
 | stereo | L/R correlation in the carrier band below 0.3 | note only, does not change the verdict |
+| source quality | gain the file needs to reach the target, its noise floor (5th-percentile 100 ms RMS) relative to its music, and its bandwidth (highest bin within 60 dB of the spectral peak) | mild when all three are bad at once: > 18 dB of gain, bandwidth < 5 kHz and floor less than 12 dB down; a quiet master alone is a note |
 
 Both generator pages run it automatically (checkbox "Pre-flight background analysis"): the single generator prints the verdict under the checkbox, the bulk generator prints it next to each generated file and logs per-carrier detail to the console. The offline Python twin (`scripts/analysis/analyze_bg.py`, `verify.py`) computes the same metrics with the same one-ERB band filter (two cascaded RBJ band-passes, roex-like skirts) for a folder of candidates against `default_sessions.json` — use it to vet new recordings before downloading a whole set.
+
+A quiet, dull, noisy master is a trap the other metrics cannot see: brought up by 20 dB it looks fine on paper but its encoder artefacts, room noise and reverb tails come up with it (Cave of Solitude: +24 dB, 2.5 kHz, floor −4 dB — replaced). Each property alone is common in good files (surf needs 20 dB, soft pads roll off at 4 kHz, sparse recordings have a low floor), so only the combination is flagged.
 
 Selection rules that follow from the metrics: no sustained pitch between 150 and 950 Hz (no drones, pads, bowls, chimes, flute, piano, vocals in that register); no tempo (drums, arpeggios, pulsing synths); broadband textures (rain, wind, stream, surf, fire) pass by construction; centred stereo for binaural sessions; mastered at a sane level (RMS > 0.05, mostly active) so normalization stays moderate.
 

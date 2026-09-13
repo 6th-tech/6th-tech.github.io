@@ -25,6 +25,11 @@ def verdict(r):
     elif bbam >= 0.3 and rms >= 0.15: iss.append("rhythm~")
     if rms < 0.15: iss.append("quiet")
     sev = "REAL" if any(i in ("mask", "beats", "rhythm") for i in iss) else ("mild" if iss else "clean")
+    sq = r.get("source")
+    if sq:
+        q = []
+        if sq["gain_db"] > 18 and sq["bandwidth_hz"] < 5000 and sq["floor_db"] > -12:
+            iss.append(f"poor-source(gain {sq['gain_db']:.0f} dB, bw {sq['bandwidth_hz']/1000:.1f} kHz, floor {sq['floor_db']:.0f} dB)")
     bsev = "REAL" if bm >= 40 else ("mild" if bm >= 15 else "clean")
     worst = min(c["snr_iso_p50_db"] for c in cs)
     return f"mask {im:3.0f}%  beats {ts:3.0f}%  bin {bm:3.0f}%  rhythm {conf:2d}  tempo {bbam*100:3.0f}%  mixRMS {rms:.2f}  worstSNR {worst:+5.1f}dB  iso={sev:<5} bin={bsev:<5} {' '.join(iss)}"
