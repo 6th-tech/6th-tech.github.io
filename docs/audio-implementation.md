@@ -53,7 +53,7 @@ Background source
   │    │       into a 60 ms hole in the gain (AM at 5–20 Hz)
   │    └─ musical: true-peak limiter, 10 ms look-ahead, program-dependent release
   │         └─ Clipping the attack of a plucked or struck note is audible as a click;
-  │            short overs release in 15 ms, sustained ones in 80 ms
+  │            6 ms attack / 20 ms look-ahead; short overs release in 60 ms, sustained ones in 150 ms
   │    A second level pass corrects for the energy either treatment removed (within 0.3 dB)
   │
   ├─ Safety limiter (idle by construction; logs if it ever engages)
@@ -85,7 +85,7 @@ The background's level is set **after** the carrier dip, on the session-length t
 **Transients** depend on what the background is, decided by its spectral flatness (median Wiener entropy over 300–8000 Hz, so a recording's low rumble cannot hide a broadband crackle; rain 0.49, fire 0.31, surf 0.17–0.21, rock 0.13, birdsong 0.05–0.09, other music 0.000–0.04; threshold 0.15):
 
 - *Noise-like*: a soft clipper (identity below 0.6, tanh curve up to the 0.85 ceiling). Its transients are noise bursts, so rounding them is inaudible, and only the samples above the knee are touched — a gain-riding limiter turned every raindrop into a 60 ms hole in the gain, i.e. amplitude modulation at 5–20 Hz, the last thing an entrainment session needs.
-- *Musical*: the true-peak limiter (10 ms look-ahead, 1.5 ms attack) with a program-dependent release — 15 ms after a short over-run such as a plucked note or a drum hit, 80 ms after a sustained one; overs closer than 25 ms count as one run so the cycles of a bass note never get a per-cycle ripple. Clipping the attack of a note is audible as a click, which is why music is not clipped.
+- *Musical*: the true-peak limiter (20 ms look-ahead, 6 ms attack) with a program-dependent release — 60 ms after a short over-run such as a plucked note or a drum hit, 150 ms after a sustained one; overs closer than 25 ms count as one run so the cycles of a bass note never get a per-cycle ripple. Clipping the attack of a note is audible as a click, which is why music is not clipped, and an abrupt gain move on a note's ring is audible as a crack, which is why the timing is gentle: measured on the water drops of "The Cave" and the hits of "Cinematic Chillhop", the gain moved up to 2–3 dB/ms with 1.5 ms / 15 ms timing and moves ≤ 0.8 dB/ms now, with ~5% more samples under mild reduction.
 
 Because both treatments remove a little energy, a second pass corrects the scale (converges within 0.3 dB; the passes and the treated percentage are logged). For musical tracks the scale is additionally capped so that the 99.9th percentile of |x| exceeds the ceiling by at most 6 dB: the limiter must stay a transient tool, never the loudness maker. Only very spiky recordings hit the cap (a sparse birdsong file sits about 3.5 dB below target); the console reports the shortfall. The old limiter call after the level stage is a safety net and idle by construction.
 
@@ -328,9 +328,9 @@ Every session logs a detailed processing chain to the console:
 | Limiter ceiling | 0.85 | Safety limiter ceiling (normally idle) |
 | Safety ceiling | 0.95 | Absolute maximum before Tone.js mix |
 | Headroom cap | 0.89 | Master gain never exceeds this |
-| Attack time | 1.5ms | Limiter gain reduction smoothing |
-| Release time | 15ms / 80ms | Limiter gain recovery after a short (≤ 20 ms) / sustained over-run |
-| Look-ahead | 10ms | Limiter anticipation window |
+| Attack time | 6ms | Limiter gain reduction smoothing |
+| Release time | 60ms / 150ms | Limiter gain recovery after a short (≤ 20 ms) / sustained over-run |
+| Look-ahead | 20ms | Limiter anticipation window |
 | Silence threshold | 0.01 | Active RMS measurement cutoff |
 
 ## Volume Level Research

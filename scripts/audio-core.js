@@ -687,7 +687,7 @@ async function generateAudio(options) {
 				const c = softClipBuffer(track, softClipKnee, peakCeiling);
 				treat = `soft clip on ${c.clippedPct.toFixed(2)}% of samples, max input ${c.maxIn.toFixed(2)}`;
 			} else {
-				const st = truePeakLimiter(track, peakCeiling, 0.01);
+				const st = truePeakLimiter(track, peakCeiling, 0.02);
 				treat = `limiter on ${st.reducedPct.toFixed(2)}% of samples, mean ${st.meanReductionDb.toFixed(1)} dB, max ${st.maxReductionDb.toFixed(1)} dB`;
 			}
 			const got = getActiveRms(track).rms;
@@ -700,7 +700,7 @@ async function generateAudio(options) {
 		// 4. Safety: nothing above may exceed the ceiling, but check anyway
 		const prePeak = getMaxVolume(track);
 		if (prePeak > peakCeiling + 0.01) {
-			const st = truePeakLimiter(track, peakCeiling, 0.01);
+			const st = truePeakLimiter(track, peakCeiling, 0.02);
 			console.log(`  Safety limiter: peak ${prePeak.toFixed(3)} → reduced on ${st.reducedPct.toFixed(1)}% of samples, max ${st.maxReductionDb.toFixed(1)} dB`);
 		}
 		const finalRms = getRms(track), finalActive = getActiveRms(track).rms;
@@ -774,12 +774,17 @@ function truePeakLimiter(audioBuffer, ceiling, lookAheadSec) {
 	const numChannels = audioBuffer.numberOfChannels;
 	const length = audioBuffer.length;
 	const lookAheadSamples = Math.max(1, Math.round(lookAheadSec * sampleRate));
-	const attackCoeff = Math.exp(-1 / (0.0015 * sampleRate));       // 1.5 ms attack
+	// Timing is deliberately gentle: an abrupt gain move on a ringing transient (a water
+	// drop, a struck key) is itself audible as a crack. With 6 ms attack over 20 ms of
+	// look-ahead and 60/150 ms release the gain never moves faster than ~0.8 dB/ms
+	// (it was up to 3 dB/ms with 1.5 ms / 15 ms), at the cost of ~5% more samples
+	// under mild reduction.
+	const attackCoeff = Math.exp(-1 / (0.006 * sampleRate));        // 6 ms attack
 	// Program-dependent release: a short over (a plucked note, a drum hit, a raindrop)
-	// is released quickly so the gain does not leave a hole behind it; a sustained over
-	// is released slowly so the gain does not ripple with the waveform.
-	const fastReleaseCoeff = Math.exp(-1 / (0.015 * sampleRate));   // 15 ms
-	const slowReleaseCoeff = Math.exp(-1 / (0.08 * sampleRate));    // 80 ms
+	// is released faster so the gain does not leave a long hole behind it; a sustained
+	// over is released slowly so the gain does not ripple with the waveform.
+	const fastReleaseCoeff = Math.exp(-1 / (0.06 * sampleRate));    // 60 ms
+	const slowReleaseCoeff = Math.exp(-1 / (0.15 * sampleRate));    // 150 ms
 	const shortRunSamples = Math.round(0.02 * sampleRate);          // an over-run ≤ 20 ms counts as short
 	const runGapSamples = Math.round(0.025 * sampleRate);           // overs closer than this belong to the same run
 
