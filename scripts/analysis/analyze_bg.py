@@ -187,8 +187,23 @@ def analyse(path, carriers, beats, iso_extra=1.0):
     fq, Pq = signal.welch(x.mean(axis=0), fs=SR, nperseg=8192); bw = float(fq[np.where(Pq > Pq.max() * 1e-6)[0][-1]])
     hp = signal.butter(4, 4000, "high", fs=SR, output="sos"); hfr = frame_rms(signal.sosfiltfilt(hp, x.mean(axis=0)), SR, 0.1)
     hf_burst_db = float(20 * np.log10(max(np.percentile(hfr, 99), 1e-9) / max(np.median(hfr), 1e-9))) if len(hfr) else 0.0
+    # steady hiss: > 6 kHz floor over active 100 ms frames — level vs the music (p5), steadiness (p5/p50), flatness 6-16 kHz
+    mono = x.mean(axis=0); nn = SR // 10; kk = len(mono) // nn; frm = mono[:kk * nn].reshape(kk, nn); lv = np.sqrt(np.mean(frm ** 2, axis=1)); actm = lv > 0.01
+    hp6 = signal.butter(4, 6000, "high", fs=SR, output="sos"); h6 = signal.sosfiltfilt(hp6, mono); hl = np.sqrt(np.mean(h6[:kk * nn].reshape(kk, nn) ** 2, axis=1))
+    hiss_floor_db, hiss_const_db, hiss_flat = -120.0, -120.0, 0.0
+    keep = lv > 1e-4; active_frame_pct = float(actm.mean() * 100)
+    if keep.sum() >= 20:
+        ha = hl[keep]; actm = keep; p5, p50 = np.percentile(ha, 5), np.percentile(ha, 50)
+        hiss_floor_db = float(20 * np.log10(max(p5, 1e-9) / max(a_rms, 1e-6))); hiss_const_db = float(20 * np.log10(max(p5, 1e-9) / max(p50, 1e-9)))
+        idx = np.where(actm)[0][np.argsort(ha)[:max(3, int(0.05 * len(ha)))]]; M = 4096; wm = np.hanning(M); kl = round(6000 / SR * M); kh = min(M // 2, round(16000 / SR * M)); fl = []
+        for i in idx:
+            s0 = i * nn
+            if s0 + M > len(mono): continue
+            P = np.abs(np.fft.rfft(mono[s0:s0 + M] * wm)) ** 2 + 1e-14; b = P[kl:kh]; fl.append(np.exp(np.mean(np.log(b))) / np.mean(b))
+        if fl: hiss_flat = float(np.median(fl))
     out = {"file": os.path.basename(path), "dur_s": n / SR, "rms": rms_all, "peak": peak,
-           "source": {"gain_db": float(gain_db), "floor_db": float(floor_db), "bandwidth_hz": bw, "hf_burst_db": hf_burst_db},
+           "source": {"gain_db": float(gain_db), "floor_db": float(floor_db), "bandwidth_hz": bw, "hf_burst_db": hf_burst_db,
+                      "hiss_floor_db": hiss_floor_db, "hiss_const_db": hiss_const_db, "hiss_flat": hiss_flat, "active_frame_pct": active_frame_pct},
            "active_rms": a_rms, "active_pct": a_pct, "scale": scale, "iso_boost_1c": boost,
            "rms_after": active_rms_mono(xbb), "iacc_broadband": iacc_bb, "carriers": {}}
 
@@ -268,7 +283,7 @@ def main():
         print(f"  dur {r['dur_s']/60:.1f} min | src RMS {r['rms']:.3f} peak {r['peak']:.2f} | active RMS {r['active_rms']:.3f} ({r['active_pct']:.0f}% active)"
               f" | scale x{r['scale']:.2f} -> mix RMS {r['rms_after']:.3f} | iso boost(1c) x{r['iso_boost_1c']:.2f} | L/R corr {r['iacc_broadband']:.2f}")
         print(f"  beats: {', '.join(f'{b:g}' for b in beats)}")
-        sq = r["source"]; print(f"  source: needs {sq['gain_db']:+.1f} dB, floor {sq['floor_db']:+.1f} dB vs active, bandwidth {sq['bandwidth_hz']/1000:.1f} kHz, HF bursts {sq['hf_burst_db']:.0f} dB")
+        sq = r["source"]; print(f"  source: needs {sq['gain_db']:+.1f} dB, floor {sq['floor_db']:+.1f} dB vs active, bandwidth {sq['bandwidth_hz']/1000:.1f} kHz, HF bursts {sq['hf_burst_db']:.0f} dB, hiss floor {sq['hiss_floor_db']:.0f} dB (p5/p50 {sq['hiss_const_db']:.0f} dB, flat {sq['hiss_flat']:.2f})")
         bb = ", ".join(f"{f_:.2f}Hz m={m_*100:.0f}%" for f_, m_, _ in r["mod_bb"][:5])
         print(f"  broadband AM peaks: {bb}")
         print(f"  {'carrier':>7} {'ERB':>5} {'SNRiso p50':>10} {'p90':>6} {'iso masked%':>11} {'SNRbin':>7} {'bin masked%':>11} {'IACC':>5} {'tonal%':>6} {'strong%':>7} {'|off|':>5} {'lvl dB':>6}  in-band AM peaks / beat conflicts")

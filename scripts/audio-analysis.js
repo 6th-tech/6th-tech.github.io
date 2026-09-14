@@ -202,7 +202,44 @@ const AudioAnalysis = (() => {
 			for (let j = 0; j < k; j++) { let q = 0; for (let i = j * n; i < (j + 1) * n; i++) q += hf[i] * hf[i]; hfr[j] = Math.sqrt(q / n); }
 			const hsorted = Float64Array.from(hfr).sort();
 			const hMed = hsorted[Math.floor(0.5 * hsorted.length)] || 1e-9, hP99 = hsorted[Math.floor(0.99 * hsorted.length)] || 1e-9;
-			return { gainDb, floorDb: 20 * Math.log10(Math.max(floor, 1e-6) / Math.max(activeRms, 1e-6)), bandwidthHz: kTop * fs0 / N, hfBurstDb: 20 * Math.log10(hP99 / Math.max(hMed, 1e-9)) };
+			// steady hiss: the high-frequency (> 6 kHz) floor over all non-silent frames —
+			// its level relative to the music (p5), how steady it is (p5 vs p50) and how
+			// flat the spectrum of the quietest-HF frames is over 6–16 kHz. Hiss from a
+			// poor microphone or a noisy master is loud, constant and flat; musical HF
+			// content (cymbals, plucks, birds) comes and goes. The frames BETWEEN sounds are
+			// the ones that matter: in a sparse recording they are most of what is heard.
+			const hp6 = biquad("highpass", 6000, fs0, 0.7071);
+			const hf6 = run(run(d0, hp6), hp6);
+			const hfAct = [], hfIdx = [];
+			let activeFrames = 0;
+			for (let j = 0; j < k; j++) {
+				if (fr[j] > 0.01) activeFrames++;
+				if (fr[j] <= 1e-4) continue; // digital silence only
+				let q = 0; for (let i = j * n; i < (j + 1) * n; i++) q += hf6[i] * hf6[i];
+				hfAct.push(Math.sqrt(q / n)); hfIdx.push(j);
+			}
+			const activeFramePct = 100 * activeFrames / Math.max(k, 1);
+			let hissFloorDb = -120, hissConstDb = -120, hissFlat = 0;
+			if (hfAct.length >= 20) {
+				const order = hfAct.map((v, i) => i).sort((a, b) => hfAct[a] - hfAct[b]);
+				const p5 = hfAct[order[Math.floor(0.05 * order.length)]], p50 = hfAct[order[Math.floor(0.5 * order.length)]];
+				hissFloorDb = 20 * Math.log10(Math.max(p5, 1e-9) / Math.max(activeRms, 1e-6));
+				hissConstDb = 20 * Math.log10(Math.max(p5, 1e-9) / Math.max(p50, 1e-9));
+				const M = 4096, wm = hann(M); let wms = 0; for (let i = 0; i < M; i++) wms += wm[i];
+				const re2 = new Float64Array(M), im2 = new Float64Array(M);
+				const kl = Math.round(6000 / fs0 * M), kh = Math.min(M / 2, Math.round(16000 / fs0 * M));
+				const fl = [];
+				for (let t = 0; t < Math.max(3, Math.floor(0.05 * order.length)); t++) {
+					const s0 = hfIdx[order[t]] * n;
+					if (s0 + M > d0.length) continue;
+					const pw = powerSpectrum(d0.subarray(s0, s0 + M), wm, wms, re2, im2);
+					let lg = 0, ln = 0, c = 0;
+					for (let q = kl; q < kh; q++) { const v = pw[q] + 1e-14; lg += Math.log(v); ln += v; c++; }
+					if (c) fl.push(Math.exp(lg / c) / (ln / c));
+				}
+				if (fl.length) hissFlat = median(fl);
+			}
+			return { gainDb, floorDb: 20 * Math.log10(Math.max(floor, 1e-6) / Math.max(activeRms, 1e-6)), bandwidthHz: kTop * fs0 / N, hfBurstDb: 20 * Math.log10(hP99 / Math.max(hMed, 1e-9)), hissFloorDb, hissConstDb, hissFlat, activeFramePct };
 		})();
 		// rms of the pulse envelope (0.5(1+sin))^punch
 		let envRms = 0; { const n = 2048; let s = 0; for (let i = 0; i < n; i++) { const e = Math.pow(0.5 * (1 + Math.sin(2 * Math.PI * i / n)), o.isochronicPunch || 1); s += e * e; } envRms = Math.sqrt(s / n); }
@@ -358,6 +395,15 @@ const AudioAnalysis = (() => {
 				issues.push(`poor source (needs ${srcQ.gainDb.toFixed(0)} dB of gain, bandwidth ${(srcQ.bandwidthHz / 1000).toFixed(1)} kHz, floor only ${(-srcQ.floorDb).toFixed(0)} dB down)`);
 			} else if (srcQ.gainDb > 18) {
 				notes.push(`quiet master, +${srcQ.gainDb.toFixed(0)} dB applied`);
+			}
+			// Steady hiss: constant (p5 within 6 dB of p50), flat (> 0.3 over 6–16 kHz) and
+			// loud — within 32 dB of the music, or within 38 dB when the recording is sparse
+			// (under 30% of frames active) so the hiss is exposed most of the time. True for
+			// rain and wind by nature; a fault in anything else (a sparse bird recording from
+			// a noisy microphone: −30 dB / −1.2 dB / 0.54, 6% of frames active).
+			const hissLoud = srcQ.hissFloorDb > -32 || (srcQ.hissFloorDb > -38 && srcQ.activeFramePct < 30);
+			if (hissLoud && srcQ.hissConstDb > -6 && srcQ.hissFlat > 0.3) {
+				issues.push(`steady broadband hiss (high-frequency floor ${(-srcQ.hissFloorDb).toFixed(0)} dB below the music and constant — expected for rain or wind, a fault for music or birdsong)`);
 			}
 			// srcQ.hfBurstDb is reported but not judged: measured across the library, plucked
 			// guitar, bowls and birdsong sit at 20–36 dB while the track that sounded like

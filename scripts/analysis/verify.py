@@ -30,6 +30,9 @@ def verdict(r):
         q = []
         if sq["gain_db"] > 18 and sq["bandwidth_hz"] < 5000 and sq["floor_db"] > -12:
             iss.append(f"poor-source(gain {sq['gain_db']:.0f} dB, bw {sq['bandwidth_hz']/1000:.1f} kHz, floor {sq['floor_db']:.0f} dB)")
+        loud = sq.get("hiss_floor_db", -120) > -32 or (sq.get("hiss_floor_db", -120) > -38 and sq.get("active_frame_pct", 100) < 30)
+        if loud and sq.get("hiss_const_db", -120) > -6 and sq.get("hiss_flat", 0) > 0.3:
+            iss.append(f"steady-hiss({-sq['hiss_floor_db']:.0f} dB below music)")
 
     bsev = "REAL" if bm >= 40 else ("mild" if bm >= 15 else "clean")
     worst = min(c["snr_iso_p50_db"] for c in cs)
