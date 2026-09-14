@@ -190,6 +190,7 @@ Measured effect on the audited sessions (normalization fix + 12 dB dip): isochro
 | level | mix RMS after normalization | mild when < 0.15 |
 | binaural | same masking test against the binaural level, in its own (possibly separated) band | masked ≥ 40% (mild ≥ 15%) |
 | stereo | L/R correlation in the carrier band below 0.3 | note only, does not change the verdict |
+| HF bursts | loudest 1% of 100 ms frames above 4 kHz vs the median | reported only — no threshold separates the track that sounded like "noise coming up" (Beach Vibe, 14 dB) from plucked guitar, bowls or birdsong (20–36 dB), and per-frame spectral flatness fared no better |
 | source quality | gain the file needs to reach the target, its noise floor (5th-percentile 100 ms RMS) relative to its music, and its bandwidth (highest bin within 60 dB of the spectral peak) | mild when all three are bad at once: > 18 dB of gain, bandwidth < 5 kHz and floor less than 12 dB down; a quiet master alone is a note |
 
 Both generator pages run it automatically (checkbox "Pre-flight background analysis"): the single generator prints the verdict under the checkbox, the bulk generator prints it next to each generated file and logs per-carrier detail to the console. The offline Python twin (`scripts/analysis/analyze_bg.py`, `verify.py`) computes the same metrics with the same one-ERB band filter (two cascaded RBJ band-passes, roex-like skirts) for a folder of candidates against `default_sessions.json` — use it to vet new recordings before downloading a whole set.

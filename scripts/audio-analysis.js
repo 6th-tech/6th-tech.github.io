@@ -32,6 +32,8 @@ const AudioAnalysis = (() => {
 		let b0, b1, b2, a0, a1, a2;
 		if (type === "lowpass") {
 			b0 = (1 - cw) / 2; b1 = 1 - cw; b2 = (1 - cw) / 2; a0 = 1 + al; a1 = -2 * cw; a2 = 1 - al;
+		} else if (type === "highpass") {
+			b0 = (1 + cw) / 2; b1 = -(1 + cw); b2 = (1 + cw) / 2; a0 = 1 + al; a1 = -2 * cw; a2 = 1 - al;
 		} else if (type === "bandpass") { // constant 0 dB peak gain
 			b0 = al; b1 = 0; b2 = -al; a0 = 1 + al; a1 = -2 * cw; a2 = 1 - al;
 		} else { // peaking
@@ -192,7 +194,15 @@ const AudioAnalysis = (() => {
 			}
 			let pk = 0; for (let q = 1; q < acc.length; q++) if (acc[q] > pk) pk = acc[q];
 			let kTop = 0; for (let q = acc.length - 1; q >= 1; q--) if (acc[q] > pk * 1e-6) { kTop = q; break; }
-			return { gainDb, floorDb: 20 * Math.log10(Math.max(floor, 1e-6) / Math.max(activeRms, 1e-6)), bandwidthHz: kTop * fs0 / N };
+			// high-frequency bursts: 100 ms frame energy above 4 kHz, loudest 1% vs median.
+			// Shaker/cymbal/wave swells read as "noise coming up from time to time" (Beach Vibe: 14 dB).
+			const hpc = biquad("highpass", 4000, fs0, 0.7071);
+			const hf = run(run(d0, hpc), hpc);
+			const hfr = new Float64Array(k);
+			for (let j = 0; j < k; j++) { let q = 0; for (let i = j * n; i < (j + 1) * n; i++) q += hf[i] * hf[i]; hfr[j] = Math.sqrt(q / n); }
+			const hsorted = Float64Array.from(hfr).sort();
+			const hMed = hsorted[Math.floor(0.5 * hsorted.length)] || 1e-9, hP99 = hsorted[Math.floor(0.99 * hsorted.length)] || 1e-9;
+			return { gainDb, floorDb: 20 * Math.log10(Math.max(floor, 1e-6) / Math.max(activeRms, 1e-6)), bandwidthHz: kTop * fs0 / N, hfBurstDb: 20 * Math.log10(hP99 / Math.max(hMed, 1e-9)) };
 		})();
 		// rms of the pulse envelope (0.5(1+sin))^punch
 		let envRms = 0; { const n = 2048; let s = 0; for (let i = 0; i < n; i++) { const e = Math.pow(0.5 * (1 + Math.sin(2 * Math.PI * i / n)), o.isochronicPunch || 1); s += e * e; } envRms = Math.sqrt(s / n); }
@@ -349,6 +359,9 @@ const AudioAnalysis = (() => {
 			} else if (srcQ.gainDb > 18) {
 				notes.push(`quiet master, +${srcQ.gainDb.toFixed(0)} dB applied`);
 			}
+			// srcQ.hfBurstDb is reported but not judged: measured across the library, plucked
+			// guitar, bowls and birdsong sit at 20–36 dB while the track that sounded like
+			// "noise coming up" (Beach Vibe) sat at 14 dB — no threshold separates them.
 		}
 		
 		if (o.useBinaural) {

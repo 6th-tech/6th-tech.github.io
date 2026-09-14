@@ -185,8 +185,10 @@ def analyse(path, carriers, beats, iso_extra=1.0):
     fr = frame_rms(x.mean(axis=0), SR, 0.1); floor = float(np.percentile(fr, 5)) if len(fr) else 0.0
     gain_db = 20 * np.log10(TARGET_RMS / max(a_rms, 1e-6)); floor_db = 20 * np.log10(max(floor, 1e-6) / max(a_rms, 1e-6))
     fq, Pq = signal.welch(x.mean(axis=0), fs=SR, nperseg=8192); bw = float(fq[np.where(Pq > Pq.max() * 1e-6)[0][-1]])
+    hp = signal.butter(4, 4000, "high", fs=SR, output="sos"); hfr = frame_rms(signal.sosfiltfilt(hp, x.mean(axis=0)), SR, 0.1)
+    hf_burst_db = float(20 * np.log10(max(np.percentile(hfr, 99), 1e-9) / max(np.median(hfr), 1e-9))) if len(hfr) else 0.0
     out = {"file": os.path.basename(path), "dur_s": n / SR, "rms": rms_all, "peak": peak,
-           "source": {"gain_db": float(gain_db), "floor_db": float(floor_db), "bandwidth_hz": bw},
+           "source": {"gain_db": float(gain_db), "floor_db": float(floor_db), "bandwidth_hz": bw, "hf_burst_db": hf_burst_db},
            "active_rms": a_rms, "active_pct": a_pct, "scale": scale, "iso_boost_1c": boost,
            "rms_after": active_rms_mono(xbb), "iacc_broadband": iacc_bb, "carriers": {}}
 
@@ -266,7 +268,7 @@ def main():
         print(f"  dur {r['dur_s']/60:.1f} min | src RMS {r['rms']:.3f} peak {r['peak']:.2f} | active RMS {r['active_rms']:.3f} ({r['active_pct']:.0f}% active)"
               f" | scale x{r['scale']:.2f} -> mix RMS {r['rms_after']:.3f} | iso boost(1c) x{r['iso_boost_1c']:.2f} | L/R corr {r['iacc_broadband']:.2f}")
         print(f"  beats: {', '.join(f'{b:g}' for b in beats)}")
-        sq = r["source"]; print(f"  source: needs {sq['gain_db']:+.1f} dB, floor {sq['floor_db']:+.1f} dB vs active, bandwidth {sq['bandwidth_hz']/1000:.1f} kHz")
+        sq = r["source"]; print(f"  source: needs {sq['gain_db']:+.1f} dB, floor {sq['floor_db']:+.1f} dB vs active, bandwidth {sq['bandwidth_hz']/1000:.1f} kHz, HF bursts {sq['hf_burst_db']:.0f} dB")
         bb = ", ".join(f"{f_:.2f}Hz m={m_*100:.0f}%" for f_, m_, _ in r["mod_bb"][:5])
         print(f"  broadband AM peaks: {bb}")
         print(f"  {'carrier':>7} {'ERB':>5} {'SNRiso p50':>10} {'p90':>6} {'iso masked%':>11} {'SNRbin':>7} {'bin masked%':>11} {'IACC':>5} {'tonal%':>6} {'strong%':>7} {'|off|':>5} {'lvl dB':>6}  in-band AM peaks / beat conflicts")
