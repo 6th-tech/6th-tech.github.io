@@ -63,14 +63,17 @@ function validateSequenceSteps(sequence) {
 
 // --------- Audio File Decoding ---------
 async function decodeAudioFile(file) {
+	// One real-time context per decode, closed afterwards: a bulk run decodes dozens of
+	// files, and an unclosed context per file leaks memory and can hit the per-tab limit.
+	const webAudioContext = new (window.AudioContext || window.webkitAudioContext)();
 	try {
 		const arrayBuf = await file.arrayBuffer();
-		const webAudioContext = new (window.AudioContext || window.webkitAudioContext)();
-		const decodedBuffer = await webAudioContext.decodeAudioData(arrayBuf.slice(0));
-		return decodedBuffer;
+		return await webAudioContext.decodeAudioData(arrayBuf.slice(0));
 	} catch (e) {
 		console.error("Error decoding audio data:", e);
 		throw new Error("Failed to decode audio file");
+	} finally {
+		webAudioContext.close().catch(() => {});
 	}
 }
 
