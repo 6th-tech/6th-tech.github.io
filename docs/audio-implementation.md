@@ -6,11 +6,12 @@ Technical documentation of the audio processing pipeline in `scripts/audio-core.
 
 ## Architecture Overview
 
-Sessions combine up to four audio layers:
+Sessions combine up to five audio layers:
 1. **Isochronic tones** — carrier oscillator gated by a sine LFO
 2. **Binaural beats** — stereo pair of slightly detuned oscillators (optional)
 3. **Background** — either built-in noise (white/pink/brown) or custom music file
-4. **Master envelope** — fade in/out applied to all layers
+4. **Guidance voice** — guided packs only: voice clips placed at their cue times, with the background and tones ducked under them (see [1j](#1j-guidance-voice-guided-packs))
+5. **Master envelope** — fade in/out applied to all layers
 
 Tone.js v15.1.22 renders layers 1 and 2 via `Tone.Offline`. The background — custom music **or** built-in noise (rendered up front by a second, tones-free `Tone.Offline`) — goes through one shared chain (active-RMS normalisation → true-peak limiter → carrier-tracking dip) and is mixed in **after** the tone render using direct sample-by-sample math — this was a critical design decision (see [Why Not Tone.js Player](#why-not-tonejs-player)).
 
@@ -72,6 +73,7 @@ Background source
 | Binaural beats | 0.16 base | Per-channel, stereo panned L/R; ×1.0–1.3 carrier-tracked; ×1.4 during SI-DO emphasis; optional carrier separation |
 | Background (music or noise) | 0.25 | Target *active* RMS as heard (after the dip and transient treatment) — same chain for both; ≈ 6 dB above the isochronic tone (0.35 × punch-2 envelope ≈ 0.13 RMS) |
 | Carrier dip | −12 dB | One ERB wide, centred on the carrier, tracks the carrier ramps (`carrierDipDb`, 0 = off) |
+| Guidance voice (guided packs) | 0.33 | Target *active* RMS of the compressed voice; ≈ 6.5 dB over the ducked bed while speaking. Background ducked −12 dB and tones −3 dB under it (see 1j) |
 | Master gain | 0.70 | `mainVolume`, capped at 0.89 headroom |
 | Fade in/out | 10s each | Linear ramp on master gain |
 | Final buffer | 3s | Silence at end after fade-out |
@@ -204,6 +206,28 @@ Selection rules that follow from the metrics: no sustained pitch between 150 and
 
 The "modulated noise" option is a `Tone.AutoFilter` lowpass sweep: **200 Hz → 1212 Hz and back, one cycle every 16 s**, Q 1, −12 dB/oct (about 30 dB of level swing in the 1–4 kHz region, 15 dB around 300–600 Hz). Two Tone.js pitfalls made the original code produce this by accident rather than by design: `AutoFilter` reads only `frequency`, `baseFrequency`, `octaves` and `filter`, so the `min: 2000, max: 15000, Q: 0.5` it used to be given were ignored (it swept its defaults, 200 Hz and 2.6 octaves), and the rate `"8m"` means eight *measures* in Tone's notation — 16 s at the default 120 BPM — not eight minutes. A faithful 2–15 kHz sweep over 8 minutes was implemented and shipped briefly, and turned out to be inaudible as modulation: the sessions sounded like a constant bed of noise. Since the 16 s sweep across the low-mid range is the sound every shipped noise session has had, it is now set explicitly (`noiseSweepPeriod`, `noiseSweepLowHz`, `noiseSweepHighHz`) so it is deliberate and stable. Built-in noise always takes the noise-like transient path (soft clipper); the carrier dip keeps the tone's band clear wherever the sweep is.
 
+### 1j. Guidance Voice (guided packs)
+
+Guided packs (sixth-mind `docs/GUIDED_SESSIONS.md`) add a voice as a fifth layer. The clips come from sixth-mind's `scripts/render_guidance.py`: a "&lt;packId&gt; - Voice" folder with `manifest.json` (per session and length: each cue's `at`, text, file and real duration) and one MP3 per cue. `generateAudio()` takes them as `voiceClips: [{ at, buffer }]`; without clips nothing below runs and a session renders exactly as before.
+
+1. **Placement:** every clip is mixed down to mono, resampled and placed at its `at` time on a session-length track (`buildVoiceTrack`). Clips that would run into the fade-out are reported.
+2. **Ducking:** an envelope built from the clip intervals (`voiceDuckEnvelope`) reaches full depth 0.3 s *before* each line starts, holds through it and recovers over 1 s, with raised-cosine ramps. Under it:
+   - the background drops by `voiceDuckBgDb` (default 12 dB);
+   - the already-rendered tones (isochronic and binaural) drop by `voiceDuckToneDb` (default 3 dB). This is a slow change of loudness only, far slower than any pulse, so the pulse rate and its full on/off depth, which entrainment locks onto, are unchanged.
+3. **Voice chain:** the same carrier-tracking dip as the background, so speech never masks the tone in its own band, then speech compression (4:1 from −30 dBFS after bringing the track to −20 dBFS active RMS; `compressVoice`), then the level is set to `voiceVolume` active RMS (default 0.33), then the true-peak limiter at `voiceCeiling`.
+4. **Mix:** the voice is added centred (the same signal in every channel) under the master fade. A guided mix then runs through the limiter at `mixCeiling` if a rare voice-plus-bed peak exceeds it, instead of the post-render step scaling the whole session down.
+
+The console reports the voice's limiter work and **"Voice balance: voice sits X dB over the ducked bed while speaking"**, where the bed is the tones plus the background. The defaults were tuned on "Finding the pulse" (steady-attention, Brittney's voice):
+
+| voice / bg duck / tone duck | balance | voice limiter (max) | mix limiter |
+|---|---|---|---|
+| 0.28 / 5 / 2.5, no compression | −1.6 dB (voice under the bed) | 5.0 dB | 0.6 dB |
+| 0.45 / 8 / 3 | +6.0 dB | 6.2 dB, on almost all speech | 0.6 dB |
+| 0.38 / 10 / 3 | +6.5 dB | 4.7 dB | 0.3 dB |
+| **0.33 / 12 / 3** (default) | **+6.5 dB** | **3.5 dB** | idle |
+
+Once the background is ducked about 10 dB or more, the tones set the balance, so a deeper background duck stops helping and the voice level is the main lever. All three values are exposed: bulk page inputs, and `--voice-volume` / `--duck-bg` / `--duck-tone` in the headless batch.
+
 ### 2. True Peak Limiter
 
 A 4-pass limiter that reduces only the peaks exceeding the ceiling while leaving the rest of the signal untouched:
@@ -333,6 +357,10 @@ Every session logs a detailed processing chain to the console:
 | Release time | 60ms / 150ms | Limiter gain recovery after a short (≤ 20 ms) / sustained over-run |
 | Look-ahead | 20ms | Limiter anticipation window |
 | Silence threshold | 0.01 | Active RMS measurement cutoff |
+| `defaultVoiceVolume` | 0.33 | Guided packs: target active RMS of the compressed voice |
+| `defaultVoiceDuckBgDb` / `defaultVoiceDuckToneDb` | 12 / 3 dB | Guided packs: background / tone dip while the voice speaks |
+| `voiceDuckAttack` / `voiceDuckRelease` | 0.3 s / 1.0 s | Duck reaches full depth before a line starts / recovers after it ends |
+| `voiceCeiling` / `mixCeiling` | 0.95 / 0.95 | Voice peak ceiling before the master gain / final guided-mix limiter |
 
 ## Volume Level Research
 
@@ -381,6 +409,16 @@ node scripts/batch/regen-sessions.js \
   --sounds "/Users/smanuel/Desktop/Used Sounds - Replacements,/Users/smanuel/Desktop/Used Sounds" \
   --out "/Users/smanuel/Desktop/New Sessions6"
 ./generate.sh "/Users/smanuel/Desktop/New Sessions6"   # FLAC + ALAC next to each WAV
+```
+
+Guided packs add `--voice` with the pack's voice folder (see 1j); a session without clips in its manifest fails rather than rendering without a voice:
+
+```bash
+node scripts/batch/regen-sessions.js \
+  --sessions ../sixth/sixth-mind/packs/steady-attention/sessions.json \
+  --sounds "/Users/smanuel/Desktop/New 6th Packs/pack1 - Used Sounds" \
+  --voice "/Users/smanuel/Desktop/New 6th Packs/steady-attention - Voice" \
+  --out "/Users/smanuel/Desktop/New 6th Packs/steady-attention"
 ```
 
 `scripts/batch/preflight.js` runs the same in-page analyzer headlessly for any sessions JSON and sound folder (`--only` to pick sessions), so a verdict can be reproduced outside the page:

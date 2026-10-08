@@ -3,11 +3,14 @@
 
 let jsonConfig = null;
 let audioFiles = new Map(); // filename -> File object
+let voiceManifest = null;   // guided packs: manifest.json from the "<packId> - Voice" folder
+let voiceFiles = new Map(); // path relative to the voice folder (e.g. "before_dawn/long_01.mp3") -> File
 let isGenerating = false;
 
 // DOM elements
 const jsonFileInput = document.querySelector("#jsonFile");
 const audioFolderInput = document.querySelector("#audioFolder");
+const voiceFolderInput = document.querySelector("#voiceFolder");
 const shortSessionsCheckbox = document.querySelector("#shortSessions");
 const useBinauralCheckbox = document.querySelector("#useBinaural");
 const isochronicVolumeInput = document.querySelector("#isochronicVolume");
@@ -77,6 +80,42 @@ function handleAudioFolder() {
 	updateUI();
 }
 
+// Guided packs: the "<packId> - Voice" folder holds manifest.json and one subfolder of
+// clips per session. Paths are kept relative to the selected folder so they match the
+// manifest's "file" entries.
+async function handleVoiceFolder() {
+	const files = Array.from(voiceFolderInput.files);
+	voiceFiles.clear();
+	voiceManifest = null;
+	let manifestFile = null;
+	files.forEach(file => {
+		const rel = (file.webkitRelativePath || file.name).split('/').slice(1).join('/');
+		if (rel === 'manifest.json') manifestFile = file;
+		else if (rel.toLowerCase().endsWith('.mp3')) voiceFiles.set(rel, file);
+	});
+	if (!files.length) {
+		updateUI();
+		return;
+	}
+	try {
+		if (!manifestFile) throw new Error('manifest.json not found in the selected voice folder');
+		voiceManifest = JSON.parse(await manifestFile.text());
+		const n = Object.keys(voiceManifest.sessions || {}).length;
+		statusText.textContent = `Loaded voice for ${n} sessions (${voiceFiles.size} clips, pack ${voiceManifest.packId}).`;
+	} catch (error) {
+		voiceManifest = null;
+		statusText.innerHTML = `<div class="error-message">Error reading voice folder: ${error.message}</div>`;
+	}
+	updateUI();
+}
+
+// Voice cues of one session variant from the manifest: [{ at, file, duration }] or null.
+function voiceCuesFor(config, isShortSession) {
+	if (!voiceManifest) return null;
+	const s = (voiceManifest.sessions || {})[config.audioFile];
+	return s ? s[isShortSession ? 'short' : 'long'] || null : null;
+}
+
 function updateUI() {
 	const canGenerate = jsonConfig && jsonConfig.length > 0 && audioFiles.size > 0 && !isGenerating;
 	generateButton.disabled = !canGenerate;
@@ -118,6 +157,21 @@ function validateJsonConfig() {
 			});
 		} catch (e) {
 			errors.push(`Configuration ${index + 1} (${config.audioFile}): Invalid sequence format`);
+		}
+
+		// Guided packs: with a voice folder loaded, every session needs its clips, and no
+		// clip may run into the fade-out (fade starts 13 s before the end)
+		if (voiceManifest) {
+			const cues = voiceCuesFor(config, isShortSession);
+			if (!cues || !cues.length) {
+				errors.push(`Configuration ${index + 1} (${config.audioFile}): no ${isShortSession ? 'short' : 'long'} voice clips in the voice folder's manifest.json`);
+			} else {
+				const lengthSec = (() => { try { return parseSequence(sequenceData).length; } catch (e) { return Infinity; } })();
+				cues.forEach(c => {
+					if (!voiceFiles.has(c.file)) errors.push(`Configuration ${index + 1} (${config.audioFile}): voice clip '${c.file}' not found in the voice folder`);
+					if (c.at + (c.duration || 0) > lengthSec - 13) errors.push(`Configuration ${index + 1} (${config.audioFile}): voice clip '${c.file}' runs into the fade-out`);
+				});
+			}
 		}
 
 		// Check if background sound file exists (when not white/pink/brown)
@@ -182,6 +236,18 @@ async function generateSingleAudio(config, index) {
 
 		const carrierDipDb = parseFloat(carrierDipInput.value);
 
+		// Guided packs: decode this session's voice clips
+		let voiceClips = null;
+		const cues = voiceCuesFor(config, isShortSession);
+		if (cues) {
+			voiceClips = [];
+			for (const c of cues) {
+				const file = voiceFiles.get(c.file);
+				if (!file) throw new Error(`Voice clip not found: ${c.file}`);
+				voiceClips.push({ at: c.at, buffer: await decodeAudioFile(file) });
+			}
+		}
+
 		// Pre-flight: measure how this background interacts with the session's carriers
 		let preflightHtml = '';
 		if (decodedNoiseBuffer && preflightCheckbox.checked) {
@@ -215,7 +281,11 @@ async function generateSingleAudio(config, index) {
 			isochronicVolume: parseFloat(isochronicVolumeInput.value),
 			isochronicPunch: parseFloat(isochronicPunchInput.value),
 			muteIsochronic: muteIsochronicCheckbox.checked,
-			carrierDipDb
+			carrierDipDb,
+			voiceClips,
+			voiceVolume: parseFloat(document.querySelector("#voiceVolume").value),
+			voiceDuckBgDb: parseFloat(document.querySelector("#voiceDuckBgDb").value),
+			voiceDuckToneDb: parseFloat(document.querySelector("#voiceDuckToneDb").value)
 		};
 
 		const audioBuffer = await generateAudio(audioOptions);
@@ -228,7 +298,7 @@ async function generateSingleAudio(config, index) {
 		downloadItem.className = 'download-item completed';
 		downloadItem.innerHTML = `
 			<span>${audioFile} (${backgroundSound})</span>
-			<span class="success-message">&#10003; Generated: ${fileName}</span>
+			<span class="success-message">&#10003; Generated: ${fileName}${voiceClips ? ` (with voice, ${voiceClips.length} clips)` : ''}</span>
 			${preflightHtml}
 		`;
 		
@@ -308,6 +378,7 @@ async function generateAll() {
 // --------- Event Listeners ---------
 jsonFileInput.addEventListener('change', handleJsonFile);
 audioFolderInput.addEventListener('change', handleAudioFolder);
+voiceFolderInput.addEventListener('change', handleVoiceFolder);
 generateButton.addEventListener('click', generateAll);
 
 // Initial UI update

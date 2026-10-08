@@ -25,6 +25,26 @@
 		</div>
 		
 		<div class="input-section">
+			<label for="voiceFolder">Voice Folder (guided packs, optional):</label>
+			<input type="file" id="voiceFolder" webkitdirectory directory multiple />
+			<div class="help-text">
+				For guided packs: select the pack's "&lt;packId&gt; - Voice" folder (manifest.json + one subfolder of clips per session, written by sixth-mind's scripts/render_guidance.py). Each session then gets its voice clips mixed in at their cue times. Leave empty for packs without guidance.
+			</div>
+		</div>
+
+		<div class="input-section">
+			<label for="voiceVolume">Voice Volume:</label>
+			<input type="number" id="voiceVolume" value="0.33" min="0.05" max="0.8" step="0.01" />
+			<label for="voiceDuckBgDb">Background duck (dB):</label>
+			<input type="number" id="voiceDuckBgDb" value="12" min="0" max="24" step="1" />
+			<label for="voiceDuckToneDb">Tone duck (dB):</label>
+			<input type="number" id="voiceDuckToneDb" value="3" min="0" max="12" step="0.5" />
+			<div class="help-text">
+				Guided packs only. Voice volume is the target active RMS of the (compressed) voice. While the voice speaks the background and the tones are lowered by these amounts; the tone duck changes loudness only, never the pulse rate or depth. The defaults put the voice ~6.5 dB over the lowered bed (the console logs the exact "Voice balance").
+			</div>
+		</div>
+
+		<div class="input-section">
 			<label for="shortSessions">Short sessions:</label>
 			<input type="checkbox" id="shortSessions" />
 		</div>

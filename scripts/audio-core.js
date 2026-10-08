@@ -18,6 +18,14 @@ const noiseSweepLowHz = 200;        // sweep bottom …
 const noiseSweepHighHz = 1212;      // … and top (2.6 octaves above)
 const noiseLikeFlatness = 0.15;     // spectral flatness (300–8000 Hz) at or above which a background counts as noise-like (clipper instead of limiter)
 const maxPeakOvershootDb = 6;       // musical backgrounds: the loudest 0.1% of samples may exceed the ceiling by at most this much before limiting (keeps the limiter on transients only; rare spikes are left to it)
+// Guidance voice (guided packs, see sixth-mind docs/GUIDED_SESSIONS.md)
+const defaultVoiceVolume = 0.33;     // target ACTIVE RMS of the compressed voice: with the ducks below it sits ~6.5 dB over the ducked bed while speaking (see the "Voice balance" log line)
+const defaultVoiceDuckBgDb = 12;     // background dip while the voice speaks (recovers within 1 s after each line)
+const defaultVoiceDuckToneDb = 3;    // tone (isochronic + binaural) dip while the voice speaks: loudness only, pulse rate and depth unchanged
+const voiceDuckAttack = 0.3;         // s: the duck reaches full depth this long BEFORE a line starts …
+const voiceDuckRelease = 1.0;        // s: … and recovers over this long after it ends
+const voiceCeiling = 0.95;           // peak ceiling of the voice track before the master gain (the bed is ducked under it)
+const mixCeiling = 0.95;             // guided sessions: rare voice+bed peaks are limited to this instead of scaling the whole file down
 
 // --------- Parsing Functions ---------
 function parseSequence(sequenceText) {
@@ -237,6 +245,75 @@ async function applyCarrierDip(track, sequence, startingCarrier, dipDb, offsets)
 	return await ctx.startRendering();
 }
 
+// Guidance voice: place each clip ({ at: seconds, buffer: AudioBuffer }) on a
+// session-length MONO track at the output rate (channels averaged, linear-interpolation
+// resampling). Returns the track and the [start, end] seconds of every clip.
+function buildVoiceTrack(clips, outSampleRate, outLength) {
+	const ctx = new OfflineAudioContext(1, outLength, outSampleRate);
+	const track = ctx.createBuffer(1, outLength, outSampleRate);
+	const dst = track.getChannelData(0);
+	const intervals = [];
+	for (const { at, buffer } of clips) {
+		const ratio = buffer.sampleRate / outSampleRate;
+		const chans = [];
+		for (let ch = 0; ch < buffer.numberOfChannels; ch++) chans.push(buffer.getChannelData(ch));
+		const start = Math.round(at * outSampleRate);
+		const n = Math.floor((buffer.length - 1) / ratio);
+		for (let k = 0; k < n; k++) {
+			const i = start + k;
+			if (i < 0) continue;
+			if (i >= outLength) break;
+			const pos = k * ratio, i0 = Math.floor(pos), frac = pos - i0;
+			let v = 0;
+			for (const c of chans) v += c[i0] * (1 - frac) + c[i0 + 1] * frac;
+			dst[i] += v / chans.length;
+		}
+		intervals.push([at, at + buffer.duration]);
+	}
+	return { track, intervals };
+}
+
+// Speech compression (4:1 from -30 dBFS, soft knee, 5 ms attack / 120 ms release) so the
+// voice can sit clearly over the bed without the peak limiter doing the work: raw
+// TTS speech peaks ~14 dB over its active RMS. The track is first brought to an active
+// RMS of 0.1 (−20 dBFS) so the threshold means the same for any clip level.
+async function compressVoice(track) {
+	const pre = 0.1 / Math.max(getActiveRms(track).rms, 1e-6);
+	const ctx = new OfflineAudioContext(track.numberOfChannels, track.length, track.sampleRate);
+	const src = ctx.createBufferSource();
+	const gain = ctx.createGain();
+	gain.gain.value = Math.min(pre, maxNormalisationScale);
+	const comp = ctx.createDynamicsCompressor();
+	comp.threshold.value = -30;
+	comp.knee.value = 8;
+	comp.ratio.value = 4;
+	comp.attack.value = 0.005;
+	comp.release.value = 0.12;
+	src.buffer = track;
+	src.connect(gain).connect(comp).connect(ctx.destination);
+	src.start(0);
+	return await ctx.startRendering();
+}
+
+// Duck envelope for the voice, 0 (no duck) … 1 (full duck): reaches full depth
+// `attack` s before each clip starts, so the first syllable already sits on the
+// lowered bed, and recovers over `release` s after it ends. Raised-cosine ramps far
+// slower than any pulse rate: a change of loudness, never an added flutter.
+function voiceDuckEnvelope(intervals, outSampleRate, outLength, attack, release) {
+	const env = new Float32Array(outLength);
+	const smooth = (x) => 0.5 - 0.5 * Math.cos(Math.PI * Math.min(1, Math.max(0, x)));
+	for (const [s, e] of intervals) {
+		const i0 = Math.max(0, Math.floor((s - attack) * outSampleRate));
+		const i1 = Math.min(outLength, Math.ceil((e + release) * outSampleRate));
+		for (let i = i0; i < i1; i++) {
+			const t = i / outSampleRate;
+			const v = t < s ? smooth((t - (s - attack)) / attack) : (t <= e ? 1 : smooth(1 - (t - e) / release));
+			if (v > env[i]) env[i] = v;
+		}
+	}
+	return env;
+}
+
 // Smooth soft clipper: identity below the knee, then a tanh curve that approaches the
 // ceiling asymptotically (C¹-continuous at the knee). Only the samples above the knee
 // are touched, so — unlike a limiter — nothing around a transient is modulated.
@@ -351,8 +428,14 @@ async function generateAudio(options) {
 		isochronicPunch = 1,
 		muteIsochronic = false,
 		carrierDipDb = defaultCarrierDipDb,
-		outputSampleRate = null
+		outputSampleRate = null,
+		// Guided packs: [{ at: seconds, buffer: AudioBuffer }, …]; null/empty = no voice
+		voiceClips = null,
+		voiceVolume = defaultVoiceVolume,
+		voiceDuckBgDb = defaultVoiceDuckBgDb,
+		voiceDuckToneDb = defaultVoiceDuckToneDb
 	} = options;
+	const hasVoice = Array.isArray(voiceClips) && voiceClips.length > 0;
 
 	// Output sample rate: defaults to the browser's audio context rate (44.1 kHz on
 	// most machines, 48 kHz on some). Pass explicitly for reproducible batch output.
@@ -409,6 +492,9 @@ async function generateAudio(options) {
 	console.log(`  Binaural: ${useBinaural ? `on (${binauralVolume}, carrier-tracked${binOffset ? `, +${binOffset}Hz separated` : ', coupled C±f/2'})` : 'off'} | Main volume: ${mainVolume}`);
 	console.log(`  Carrier dip: ${dipDb ? `-${dipDb} dB, one ERB wide, tracking the carrier${useBinaural && binOffset ? ` (+ second dip at carrier+${binOffset}Hz)` : ''}` : 'off'}`);
 	console.log(`  Duration: ${(durationSec / 60).toFixed(1)}min`);
+	if (hasVoice) {
+		console.log(`  Voice: ${voiceClips.length} clips, target active RMS ${voiceVolume}, ducks background -${voiceDuckBgDb} dB / tones -${voiceDuckToneDb} dB`);
+	}
 
 	// --------- Background: custom music OR built-in noise, same chain ---------
 	// The background is prepared at unity gain here; its LEVEL is set later, after the
@@ -636,14 +722,42 @@ async function generateAudio(options) {
 		const fadeOutStart = Math.max(0, durationSec - Math.max(0, fadeOut + finalBuffer));
 		const fadeOutEnd = Math.min(durationSec, fadeOutStart + fadeOut);
 		const outSR = rendered.sampleRate;
+		// Master fade envelope as a function of time (same shape as the Tone.js master gain)
+		const masterAt = (t) => {
+			if (t < fadeInEnd) return headroom * (t / fadeInEnd);
+			if (t >= fadeOutStart && t < fadeOutEnd) return headroom * (1 - (t - fadeOutStart) / (fadeOutEnd - fadeOutStart));
+			if (t >= fadeOutEnd) return 0;
+			return headroom;
+		};
+		const dipOffsets = (useBinaural && numChannels === 2 && binOffset) ? [binOffset] : [];
+
+		// 0. Guidance voice (guided packs): build the voice track and its duck envelope,
+		//    then lower the already-rendered tones while the voice speaks. The tone dip is
+		//    a slow change of loudness only, so the pulse rate and its full on/off depth —
+		//    what entrainment locks onto — stay intact.
+		let voice = null, duck = null;
+		const bgFloor = Math.pow(10, -Math.max(0, voiceDuckBgDb) / 20);
+		if (hasVoice) {
+			const built = buildVoiceTrack(voiceClips, outSR, rendered.length);
+			voice = built.track;
+			duck = voiceDuckEnvelope(built.intervals, outSR, rendered.length, voiceDuckAttack, voiceDuckRelease);
+			const late = built.intervals.filter(([, e]) => e > fadeOutStart);
+			if (late.length) console.warn(`  Voice: ${late.length} clip(s) run into the fade-out (from ${fadeOutStart.toFixed(1)} s)`);
+			const toneFloor = Math.pow(10, -Math.max(0, voiceDuckToneDb) / 20);
+			if (toneFloor < 1) {
+				for (let ch = 0; ch < rendered.numberOfChannels; ch++) {
+					const d = rendered.getChannelData(ch);
+					for (let i = 0; i < d.length; i++) if (duck[i]) d[i] *= 1 - (1 - toneFloor) * duck[i];
+				}
+			}
+		}
 
 		// 1. Session-length background track (looped + resampled to the output format), unity gain
 		let track = buildBackgroundTrack(scaledNoiseBuffer, outSR, rendered.length, rendered.numberOfChannels);
 
 		// 2. Carrier-tracking dip (and a second dip on the separated binaural base)
 		if (dipDb) {
-			const offsets = (useBinaural && numChannels === 2 && binOffset) ? [binOffset] : [];
-			track = await applyCarrierDip(track, sequence, startingCarrier, dipDb, offsets);
+			track = await applyCarrierDip(track, sequence, startingCarrier, dipDb, dipOffsets);
 		}
 
 		// 3. Level: normalise the DIPPED track so its active RMS hits the target. The
@@ -710,26 +824,55 @@ async function generateAudio(options) {
 		const toneRms = isochronicVolume * punchEnvelopeRms(punchExponent) * Math.SQRT1_2;
 		console.log(`  Background final: RMS=${finalRms.toFixed(4)}, active RMS=${finalActive.toFixed(4)}, peak=${getMaxVolume(track).toFixed(3)} | isochronic tone RMS ${toneRms.toFixed(4)} → tone is ${(20 * Math.log10(toneRms / Math.max(finalActive, 1e-6))).toFixed(1)} dB relative to the background`);
 
-		// 5. Add with the master fade envelope (same shape as the Tone.js master gain)
+		// 5. Add with the master fade envelope (same shape as the Tone.js master gain),
+		//    ducked under the voice in guided sessions
 		for (let ch = 0; ch < rendered.numberOfChannels; ch++) {
 			const outData = rendered.getChannelData(ch);
 			const bg = track.getChannelData(ch);
 			for (let i = 0; i < rendered.length; i++) {
-				const t = i / outSR;
-				let masterGain;
-				if (t < fadeInEnd) {
-					masterGain = headroom * (t / fadeInEnd);
-				} else if (t >= fadeOutStart && t < fadeOutEnd) {
-					masterGain = headroom * (1 - (t - fadeOutStart) / (fadeOutEnd - fadeOutStart));
-				} else if (t >= fadeOutEnd) {
-					masterGain = 0;
-				} else {
-					masterGain = headroom;
-				}
-				outData[i] += bg[i] * masterGain;
+				const g = duck ? 1 - (1 - bgFloor) * duck[i] : 1;
+				outData[i] += bg[i] * masterAt(i / outSR) * g;
 			}
 		}
 		console.log(`  Background mixed directly${dipDb ? ' after carrier dip' : ''} (bypassed Tone.js Player)`);
+
+		// 6. Guidance voice: the same carrier dip as the background (speech must not mask
+		//    the tone in its own band), level to the target active RMS, limit its peaks,
+		//    then mix it centred (the same signal in every channel) under the master fade.
+		if (hasVoice) {
+			if (dipDb) voice = await applyCarrierDip(voice, sequence, startingCarrier, dipDb, dipOffsets);
+			voice = await compressVoice(voice);
+			const va = getActiveRms(voice);
+			const vScale = Math.min(voiceVolume / Math.max(va.rms, 1e-6), maxNormalisationScale);
+			const vd = voice.getChannelData(0);
+			for (let i = 0; i < vd.length; i++) vd[i] *= vScale;
+			// The bed is ducked while the voice speaks, so the voice may peak higher than the
+			// background's ceiling; rare overs in the full mix are caught by the mix limiter.
+			const speechPct = getActiveRms(voice).activePct;
+			const vl = truePeakLimiter(voice, voiceCeiling, 0.02);
+			console.log(`  Voice level: compressed, active RMS x${vScale.toFixed(2)} → ${voiceVolume}; limiter on ${(100 * vl.reducedPct / Math.max(speechPct, 1e-6)).toFixed(1)}% of speech, max ${vl.maxReductionDb.toFixed(1)} dB`);
+			// Balance check while the voice speaks (full duck): voice vs. the ducked bed
+			// (tones + background), both as heard. Clear narration sits ~6–8 dB over it.
+			let vPow = 0, bPow = 0, n = 0;
+			const bedL = rendered.getChannelData(0);
+			for (let i = 0; i < vd.length; i++) {
+				if (duck[i] < 0.999 || Math.abs(vd[i]) < 0.01) continue;
+				const m = masterAt(i / outSR);
+				vPow += (vd[i] * m) ** 2; bPow += bedL[i] ** 2; n++;
+			}
+			if (n) console.log(`  Voice balance: voice sits ${(10 * Math.log10(vPow / Math.max(bPow, 1e-12))).toFixed(1)} dB over the ducked bed while speaking`);
+			for (let ch = 0; ch < rendered.numberOfChannels; ch++) {
+				const out = rendered.getChannelData(ch);
+				for (let i = 0; i < out.length; i++) if (vd[i]) out[i] += vd[i] * masterAt(i / outSR);
+			}
+			// Rare coincident voice + bed peaks: limit them instead of letting the
+			// post-render step scale the whole session down.
+			const mixPeak = getMaxVolume(rendered);
+			if (mixPeak > mixCeiling) {
+				const st = truePeakLimiter(rendered, mixCeiling, 0.02);
+				console.log(`  Mix limiter: peak ${mixPeak.toFixed(3)} → ${mixCeiling} on ${st.reducedPct.toFixed(3)}% of samples, max ${st.maxReductionDb.toFixed(1)} dB`);
+			}
+		}
 	}
 
 	// Post-render: normalize to 0.95 peak if clipping

@@ -5,6 +5,12 @@
 //        [--only "Healing vibes,sleep_well"] [--long-only | --short-only]
 //        [--binaural 1] [--offset 150] [--dip 12] [--iso 0.35] [--punch 2] [--bg-volume 0.25] [--main 0.7]
 //        [--rate 48000] [--playwright <playwright-core dir>] [--chrome <headless_shell executable>]
+//        [--voice <"<packId> - Voice" dir>] [--voice-volume 0.33] [--duck-bg 12] [--duck-tone 3]
+//
+// Guided packs: --voice points at the folder written by sixth-mind's
+// scripts/render_guidance.py (manifest.json + <audioFile>/<long|short>_NN.mp3). Every
+// session then gets its voice clips mixed in at their cue times; a session without
+// clips in the manifest fails instead of silently rendering without a voice.
 //
 // What it does: starts a small local HTTP server that serves this repo (generate.html +
 // scripts), the background sound folders and the sessions JSON; launches headless Chromium through playwright-core; and for every
@@ -48,6 +54,21 @@ const OPTS = {
 	outputSampleRate: parseInt(arg('rate', '48000'), 10)
 };
 const VARIANTS = has('long-only') ? [false] : (has('short-only') ? [true] : [false, true]);
+const VOICE = arg('voice');
+const VOICE_MANIFEST = VOICE ? JSON.parse(fs.readFileSync(path.join(VOICE, 'manifest.json'), 'utf8')) : null;
+if (VOICE) {
+	OPTS.voiceVolume = parseFloat(arg('voice-volume', '0.33'));
+	OPTS.voiceDuckBgDb = parseFloat(arg('duck-bg', '12'));
+	OPTS.voiceDuckToneDb = parseFloat(arg('duck-tone', '3'));
+}
+// Voice cues for one session variant: [{ at, file }] from the manifest, or throws.
+function voiceCues(s, short) {
+	if (!VOICE_MANIFEST) return null;
+	const cues = ((VOICE_MANIFEST.sessions || {})[s.audioFile] || {})[short ? 'short' : 'long'];
+	if (!cues || !cues.length) throw new Error(`no voice clips for ${s.audioFile} (${short ? 'short' : 'long'}) in ${VOICE}/manifest.json`);
+	for (const c of cues) if (!fs.existsSync(path.join(VOICE, c.file))) throw new Error(`voice clip missing: ${c.file}`);
+	return cues.map(c => ({ at: c.at, file: c.file }));
+}
 
 function findPlaywright() {
 	if (arg('playwright')) return arg('playwright');
@@ -78,6 +99,10 @@ function startServer() {
 			const u = url.parse(req.url, true);
 			const p = decodeURIComponent(u.pathname);
 			if (p === '/sessions.json') return serveFile(res, SESSIONS);
+			if (VOICE && p.startsWith('/voice/')) {
+				const rel = path.normalize(p.slice('/voice/'.length)).replace(/^(\.\.[\/\\])+/, '');
+				return serveFile(res, path.join(VOICE, rel));
+			}
 			if (p.startsWith('/sounds/')) {
 				const name = path.basename(p.slice('/sounds/'.length));
 				for (const dir of SOUNDS) { const f = path.join(dir, name); if (fs.existsSync(f)) return serveFile(res, f); }
@@ -98,7 +123,7 @@ function startServer() {
 	const browser = await chromium.launch({ headless: true, executablePath: findChrome() });
 	const page = await browser.newPage({ acceptDownloads: true });
 	page.setDefaultTimeout(0);
-	page.on('console', (msg) => { const t = msg.text(); if (/Pre-flight|Normalisation|Limiter|Output peak|Background source/.test(t)) console.log('   ' + t.trim()); });
+	page.on('console', (msg) => { const t = msg.text(); if (/Pre-flight|Normalisation|Limiter|Output peak|Background source|Voice|Mix limiter/.test(t)) console.log('   ' + t.trim()); });
 	page.on('pageerror', (e) => console.log('   PAGE ERROR ' + e.message));
 	await page.goto(`http://127.0.0.1:${port}/generate.html`, { waitUntil: 'load' });
 	const ok = await page.evaluate(() => typeof generateAudio === 'function' && typeof AudioAnalysis === 'object' && typeof audioBufferToWav === 'function');
@@ -118,7 +143,8 @@ function startServer() {
 				const probe = await page.evaluate(({ seqText }) => parseSequence(seqText).length, { seqText });
 				const expected = 44 + Math.round(probe) * OPTS.outputSampleRate * 2 * 2; // stereo 16-bit
 				if (fs.existsSync(target) && fs.statSync(target).size === expected) { console.log(`skip ${fname} (complete)`); skipped++; continue; }
-				const [download, res] = await Promise.all([page.waitForEvent('download'), page.evaluate(async ({ s, short, OPTS }) => {
+				const cues = voiceCues(s, short);
+				const [download, res] = await Promise.all([page.waitForEvent('download'), page.evaluate(async ({ s, short, OPTS, cues }) => {
 					const isNoise = ['white', 'pink', 'brown'].includes(s.backgroundSound.toLowerCase());
 					window.__ctx = window.__ctx || new (window.AudioContext || window.webkitAudioContext)();
 					window.__bg = window.__bg || {};
@@ -134,17 +160,26 @@ function startServer() {
 					const parsed = parseSequence(short ? s.shortSequence : s.sequence);
 					let preflight = null;
 					if (bg && !short) preflight = AudioAnalysis.analyzeBackground(bg, parsed.sequence, { targetVolume: OPTS.customNoiseVolume, isochronicVolume: OPTS.isochronicVolume, useBinaural: OPTS.useBinaural, binauralCarrierOffset: OPTS.binauralCarrierOffset, carrierDipDb: OPTS.carrierDipDb }).summary;
+					let voiceClips = null;
+					if (cues) {
+						voiceClips = [];
+						for (const c of cues) {
+							const r = await fetch('/voice/' + c.file.split('/').map(encodeURIComponent).join('/'));
+							if (!r.ok) throw new Error('voice clip not found: ' + c.file);
+							voiceClips.push({ at: c.at, buffer: await window.__ctx.decodeAudioData(await r.arrayBuffer()) });
+						}
+					}
 					const buf = await generateAudio(Object.assign({
 						sequence: parsed.sequence, length: parsed.length,
 						noiseType: isNoise ? s.backgroundSound : 'custom',
 						useNoiseModulation: isNoise, useNoiseFade: !isNoise, alwaysMono: false,
-						decodedNoiseBuffer: bg, muteIsochronic: false
+						decodedNoiseBuffer: bg, muteIsochronic: false, voiceClips
 					}, OPTS));
 					let peak = 0; const x = buf.getChannelData(0); for (let i = 0; i < x.length; i += 5) { const a = Math.abs(x[i]); if (a > peak) peak = a; }
 					const bytes = 44 + buf.length * buf.numberOfChannels * 2;
 					downloadWav(buf, s.audioFile + (short ? '.short.wav' : '.wav')); // browser download: bytes never cross the automation pipe
 					return { ch: buf.numberOfChannels, fs: buf.sampleRate, sec: Math.round(buf.length / buf.sampleRate), mb: +(bytes / 1048576).toFixed(1), peak: +peak.toFixed(3), preflight };
-				}, { s, short, OPTS })]);
+				}, { s, short, OPTS, cues })]);
 				await download.saveAs(target);
 				const saved = fs.statSync(target).size;
 				console.log(`${fname}: ${res.ch}ch ${res.fs}Hz ${res.sec}s ${res.mb}MB saved=${saved}${saved === expected ? '' : ' SIZE MISMATCH'} peak=${res.peak} in ${((Date.now() - t0) / 1000).toFixed(1)}s${res.preflight ? '\n   pre-flight: ' + res.preflight : ''}`);
