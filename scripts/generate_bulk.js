@@ -285,7 +285,8 @@ async function generateSingleAudio(config, index) {
 			voiceClips,
 			voiceVolume: parseFloat(document.querySelector("#voiceVolume").value),
 			voiceDuckBgDb: parseFloat(document.querySelector("#voiceDuckBgDb").value),
-			voiceDuckToneDb: parseFloat(document.querySelector("#voiceDuckToneDb").value)
+			voiceDuckToneDb: parseFloat(document.querySelector("#voiceDuckToneDb").value),
+			outputSampleRate: parseInt(document.querySelector("#outputSampleRate").value, 10)
 		};
 
 		const audioBuffer = await generateAudio(audioOptions);

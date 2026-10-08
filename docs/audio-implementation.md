@@ -394,7 +394,8 @@ Commit: `ed97c93 - Lower default isochronic tone volume to 0.35 based on researc
 ## Known Behaviors
 
 - **Sparse nature sounds**: Files with large silent gaps (birds, ocean waves, campfire) have very low global RMS. Normalization is keyed to their active RMS, so the sounding parts reach the target level while the gaps stay quiet; the limiter absorbs the transients and logs how hard it worked. Files that are almost entirely below the silence threshold (a few percent active) still end up quiet — the pre-flight analysis flags them.
-- **Sample rate conversion**: Music files at different sample rates than the output (typically 44100 Hz) are handled via linear interpolation during mixing. No resampling step needed.
+- **Output sample rate**: the bulk generator renders at the rate picked in its "Sample rate" setting (48 kHz by default, 44.1 kHz optional), the same 48 kHz the batch renderer uses. Before this setting existed the page used the browser's audio rate, which follows the Mac's current output device. That is why the default sessions rendered on 2026-09-14 are 44.1 kHz while the packs are 48 kHz. The single generator (`generate.html`) still uses the browser rate.
+- **Sample rate conversion**: Music files at different sample rates than the output are handled via linear interpolation during mixing. No resampling step needed.
 - **Mono music → stereo output**: When binaural beats are enabled (stereo output) but the music file is mono, the mono channel is duplicated to both output channels.
 
 ---

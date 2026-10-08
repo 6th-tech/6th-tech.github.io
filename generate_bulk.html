@@ -132,6 +132,17 @@
 			<label for="alwaysMono">Always mono:</label>
 			<input type="checkbox" id="alwaysMono" />
 		</div>
+
+		<div class="input-section">
+			<label for="outputSampleRate">Sample rate:</label>
+			<select id="outputSampleRate">
+				<option value="48000" selected>48 kHz (default)</option>
+				<option value="44100">44.1 kHz</option>
+			</select>
+			<div class="help-text">
+				Sample rate of the rendered WAVs. Fixed here so the output no longer depends on the Mac's current output device, and matches the batch renderer (regen-sessions.js, --rate 48000).
+			</div>
+		</div>
 		
 		<div class="input-section">
 			<button id="generateButton" disabled>Generate All</button>
