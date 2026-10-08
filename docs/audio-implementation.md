@@ -402,7 +402,7 @@ Commit: `ed97c93 - Lower default isochronic tone volume to 0.35 based on researc
 
 ## Batch Regeneration (headless)
 
-`scripts/batch/regen-sessions.js` renders every session of a sessions JSON with the same `generateAudio()` the pages use, in a headless Chromium driven through playwright-core, and writes `<audioFile>.wav` + `<audioFile>.short.wav`. It serves the repo and the sound folders itself, so nothing needs to be uploaded through the bulk page:
+`scripts/batch/regen-sessions.js` renders every session of a sessions JSON with the same `generateAudio()` the pages use, in a headless Chromium driven through playwright-core, and writes `<audioFile>.wav` + `<audioFile>.short.wav` (only `<audioFile>.wav` for a single-length session, one without a `shortSequence`, e.g. a 20-minute pack; the bulk page skips those in short mode and accepts any whole-minute length from 6 to 60 for them). It serves the repo and the sound folders itself, so nothing needs to be uploaded through the bulk page:
 
 ```bash
 node scripts/batch/regen-sessions.js \

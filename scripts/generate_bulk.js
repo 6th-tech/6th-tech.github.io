@@ -137,6 +137,10 @@ function validateJsonConfig() {
 	const sequenceField = isShortSession ? 'shortSequence' : 'sequence';
 
 	jsonConfig.forEach((config, index) => {
+		// Single-length pack sessions (no shortSequence, e.g. 20-minute packs) ship one file of
+		// their own length (whole minutes, 6-60): nothing to render in short mode.
+		const singleLength = !config.shortSequence;
+		if (isShortSession && singleLength) return;
 		const sequenceData = config[sequenceField];
 
 		// Check if the required sequence field exists
@@ -149,7 +153,11 @@ function validateJsonConfig() {
 		try {
 			const { sequence: parsedSteps, length } = parseSequence(sequenceData);
 			const durationMinutes = length / 60;
-			if (Math.abs(durationMinutes - expectedDuration) > 0) {
+			if (singleLength) {
+				if (!Number.isInteger(durationMinutes) || durationMinutes < 6 || durationMinutes > 60) {
+					errors.push(`Configuration ${index + 1} (${config.audioFile}): Sequence duration is ${durationMinutes.toFixed(1)} minutes; a session without a shortSequence must be a whole number of minutes, 6-60`);
+				}
+			} else if (Math.abs(durationMinutes - expectedDuration) > 0) {
 				errors.push(`Configuration ${index + 1} (${config.audioFile}): Sequence duration is ${durationMinutes.toFixed(1)} minutes, should be ${expectedDuration} minutes`);
 			}
 			validateSequenceSteps(parsedSteps).forEach(msg => {
@@ -327,6 +335,10 @@ async function generateAll() {
 		return;
 	}
 	
+	// Short mode skips single-length sessions (no shortSequence): they have no short variant.
+	const configs = shortSessionsCheckbox.checked ? jsonConfig.filter(c => c.shortSequence) : jsonConfig;
+	const skipped = jsonConfig.length - configs.length;
+
 	isGenerating = true;
 	generateButton.disabled = true;
 	
@@ -336,7 +348,7 @@ async function generateAll() {
 	// Show progress
 	progressContainer.style.display = 'block';
 	progressFill.style.width = '0%';
-	progressText.textContent = `0 / ${jsonConfig.length}`;
+	progressText.textContent = `0 / ${configs.length}`;
 	
 	let completed = 0;
 	let successful = 0;
@@ -344,8 +356,8 @@ async function generateAll() {
 	statusText.textContent = 'Generating audio files...';
 	
 	// Generate each audio file sequentially
-	for (let i = 0; i < jsonConfig.length; i++) {
-		const config = jsonConfig[i];
+	for (let i = 0; i < configs.length; i++) {
+		const config = configs[i];
 		
 		try {
 			const success = await generateSingleAudio(config, i);
@@ -357,9 +369,9 @@ async function generateAll() {
 		completed++;
 		
 		// Update progress
-		const progress = (completed / jsonConfig.length) * 100;
+		const progress = (completed / configs.length) * 100;
 		progressFill.style.width = `${progress}%`;
-		progressText.textContent = `${completed} / ${jsonConfig.length}`;
+		progressText.textContent = `${completed} / ${configs.length}`;
 		
 		// Small delay to prevent UI blocking
 		await new Promise(resolve => setTimeout(resolve, 100));
@@ -368,7 +380,7 @@ async function generateAll() {
 	// Final status
 	statusText.innerHTML = `
 		<div class="success-message">
-			Generation complete! ${successful} of ${jsonConfig.length} files generated successfully.
+			Generation complete! ${successful} of ${configs.length} files generated successfully.${skipped ? ` Skipped ${skipped} single-length session(s): no short variant.` : ''}
 		</div>
 	`;
 	
