@@ -2,13 +2,20 @@
 set -euo pipefail
 
 # Usage:
-#   ./generate.sh [-v] /path/to/dir
+#   ./generate.sh [-v] [-f] /path/to/dir
 #   ./generate.sh /path/with~tilde
+#   -v  verbose
+#   -f  re-encode even when the FLAC/ALAC already exists (after re-rendering a WAV)
 VERBOSE=0
-if [[ "${1:-}" == "-v" ]]; then
-  VERBOSE=1
+FORCE=0
+while [[ "${1:-}" == -* ]]; do
+  case "$1" in
+    -v) VERBOSE=1 ;;
+    -f) FORCE=1 ;;
+    *) echo "Unknown option: $1"; exit 1 ;;
+  esac
   shift
-fi
+done
 
 DIR_RAW="${1:-.}"
 
@@ -37,7 +44,7 @@ for wav_raw in "${WAVS[@]}"; do
 
   (( VERBOSE )) && echo "Processing: ${wav#./}"
 
-  if [[ ! -e "$flac_out" ]]; then
+  if (( FORCE )) || [[ ! -e "$flac_out" ]]; then
     echo "→ FLAC : ${wav#./}"
     (( VERBOSE )) && echo "ffmpeg -y -i \"$wav\" -map_metadata 0 -c:a flac -compression_level 12 \"$flac_out\""
     ffmpeg -y -i "$wav" -map_metadata 0 -c:a flac -compression_level 12 "$flac_out"
@@ -45,7 +52,7 @@ for wav_raw in "${WAVS[@]}"; do
     echo "✓ FLAC exists: ${flac_out#./}"
   fi
 
-  if [[ ! -e "$m4a_out" ]]; then
+  if (( FORCE )) || [[ ! -e "$m4a_out" ]]; then
     echo "→ ALAC : ${wav#./}"
     (( VERBOSE )) && echo "ffmpeg -y -i \"$wav\" -map_metadata 0 -c:a alac \"$m4a_out\""
     ffmpeg -y -i "$wav" -map_metadata 0 -c:a alac "$m4a_out"

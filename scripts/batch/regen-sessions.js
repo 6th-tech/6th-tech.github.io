@@ -5,6 +5,7 @@
 //        [--only "Healing vibes,sleep_well"] [--long-only | --short-only]
 //        [--binaural 1] [--offset 150] [--dip 12] [--iso 0.35] [--punch 2] [--bg-volume 0.25] [--main 0.7]
 //        [--rate 48000] [--playwright <playwright-core dir>] [--chrome <headless_shell executable>]
+//        [--force]  re-render even when a complete WAV exists (e.g. after re-voicing)
 //        [--voice <"<packId> - Voice" dir>] [--voice-volume 0.33] [--duck-bg 12] [--duck-tone 3]
 //
 // Guided packs: --voice points at the folder written by sixth-mind's
@@ -142,7 +143,7 @@ function startServer() {
 			try {
 				const probe = await page.evaluate(({ seqText }) => parseSequence(seqText).length, { seqText });
 				const expected = 44 + Math.round(probe) * OPTS.outputSampleRate * 2 * 2; // stereo 16-bit
-				if (fs.existsSync(target) && fs.statSync(target).size === expected) { console.log(`skip ${fname} (complete)`); skipped++; continue; }
+				if (!has('force') && fs.existsSync(target) && fs.statSync(target).size === expected) { console.log(`skip ${fname} (complete)`); skipped++; continue; }
 				const cues = voiceCues(s, short);
 				const [download, res] = await Promise.all([page.waitForEvent('download'), page.evaluate(async ({ s, short, OPTS, cues }) => {
 					const isNoise = ['white', 'pink', 'brown'].includes(s.backgroundSound.toLowerCase());
