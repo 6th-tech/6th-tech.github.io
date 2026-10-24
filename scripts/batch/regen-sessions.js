@@ -67,7 +67,7 @@ const PROVENANCE = (() => {
 	let commit = 'unknown';
 	try {
 		commit = require('child_process').execSync('git rev-parse --short HEAD', { cwd: REPO }).toString().trim();
-		if (require('child_process').execSync('git status --porcelain -- scripts generate.html', { cwd: REPO }).toString().trim()) commit += '-dirty';
+		if (require('child_process').execSync('git status --porcelain --untracked-files=no -- scripts generate.html', { cwd: REPO }).toString().trim()) commit += '-dirty';
 	} catch (e) { /* not a git checkout */ }
 	return { generator: commit, rendered: new Date().toISOString().slice(0, 10) };
 })();
