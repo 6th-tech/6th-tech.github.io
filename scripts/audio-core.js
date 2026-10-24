@@ -26,6 +26,8 @@ const voiceDuckAttack = 0.3;         // s: the duck reaches full depth this long
 const voiceDuckRelease = 1.0;        // s: … and recovers over this long after it ends
 const voiceCeiling = 0.95;           // peak ceiling of the voice track before the master gain (the bed is ducked under it)
 const mixCeiling = 0.95;             // guided sessions: rare voice+bed peaks are limited to this instead of scaling the whole file down
+const defaultMode2BinauralVolume = 0.184; // app audio mode 2 ("Beats only"): binaural level with no isochronic tone; 1.15 × 0.16 ≈ the punch-2 isochronic tone's RMS (to be settled by ear)
+const toneRecipeVersion = 1;         // version of the recipe exportStems returns (see "Stems and tone recipe" in docs/audio-implementation.md)
 
 // --------- Parsing Functions ---------
 function parseSequence(sequenceText) {
@@ -433,7 +435,12 @@ async function generateAudio(options) {
 		voiceClips = null,
 		voiceVolume = defaultVoiceVolume,
 		voiceDuckBgDb = defaultVoiceDuckBgDb,
-		voiceDuckToneDb = defaultVoiceDuckToneDb
+		voiceDuckToneDb = defaultVoiceDuckToneDb,
+		// App audio modes: also return the background alone and the tone recipe the
+		// app needs to synthesise the tones itself ({ mix, bg, recipe } instead of the mix).
+		exportStems = false,
+		mode2BinauralVolume = defaultMode2BinauralVolume,
+		sequenceText = null
 	} = options;
 	const hasVoice = Array.isArray(voiceClips) && voiceClips.length > 0;
 
@@ -580,7 +587,8 @@ async function generateAudio(options) {
 
 	// Tone.js renders ONLY the isochronic tones and binaural beats. The background
 	// (music or noise) is mixed in afterward with plain sample math.
-	const rendered = await Tone.Offline(({ transport }) => {
+	// muteIso renders the binaural layer alone (exportStems needs its peak for mode 2).
+	const renderTones = (muteIso) => Tone.Offline(({ transport }) => {
 		// Carrier gated by LFO (0..1) -> carrier-tracked level gain -> master
 		const initialCarrier = startingCarrier;
 		const oscGate = new Tone.Gain(0);
@@ -626,7 +634,7 @@ async function generateAudio(options) {
 
 		// Master out
 		const master = new Tone.Gain(0).toDestination();
-		if (!muteIsochronic) {
+		if (!muteIso) {
 			isoLevel.connect(master);
 		}
 
@@ -714,6 +722,12 @@ async function generateAudio(options) {
 
 		transport.start(0);
 	}, durationSec, alwaysMono ? 1 : numChannels, outSampleRate);
+	const rendered = await renderTones(muteIsochronic);
+	const binauralOnly = exportStems && useBinaural && numChannels === 2 ? await renderTones(true) : null;
+	// exportStems: the background exactly as it is added to the tones (master fade, voice
+	// duck and voice included), one Float32Array per channel.
+	const bgStem = exportStems ? Array.from({ length: rendered.numberOfChannels }, () => new Float32Array(rendered.length)) : null;
+	let duckIntervals = [], mixLimited = false;
 
 	// --------- Level, dynamics and mix of the background ---------
 	{
@@ -740,14 +754,17 @@ async function generateAudio(options) {
 		if (hasVoice) {
 			const built = buildVoiceTrack(voiceClips, outSR, rendered.length);
 			voice = built.track;
+			duckIntervals = built.intervals;
 			duck = voiceDuckEnvelope(built.intervals, outSR, rendered.length, voiceDuckAttack, voiceDuckRelease);
 			const late = built.intervals.filter(([, e]) => e > fadeOutStart);
 			if (late.length) console.warn(`  Voice: ${late.length} clip(s) run into the fade-out (from ${fadeOutStart.toFixed(1)} s)`);
 			const toneFloor = Math.pow(10, -Math.max(0, voiceDuckToneDb) / 20);
 			if (toneFloor < 1) {
-				for (let ch = 0; ch < rendered.numberOfChannels; ch++) {
-					const d = rendered.getChannelData(ch);
-					for (let i = 0; i < d.length; i++) if (duck[i]) d[i] *= 1 - (1 - toneFloor) * duck[i];
+				for (const buf of binauralOnly ? [rendered, binauralOnly] : [rendered]) {
+					for (let ch = 0; ch < buf.numberOfChannels; ch++) {
+						const d = buf.getChannelData(ch);
+						for (let i = 0; i < d.length; i++) if (duck[i]) d[i] *= 1 - (1 - toneFloor) * duck[i];
+					}
 				}
 			}
 		}
@@ -831,7 +848,9 @@ async function generateAudio(options) {
 			const bg = track.getChannelData(ch);
 			for (let i = 0; i < rendered.length; i++) {
 				const g = duck ? 1 - (1 - bgFloor) * duck[i] : 1;
-				outData[i] += bg[i] * masterAt(i / outSR) * g;
+				const v = bg[i] * masterAt(i / outSR) * g;
+				outData[i] += v;
+				if (bgStem) bgStem[ch][i] = v;
 			}
 		}
 		console.log(`  Background mixed directly${dipDb ? ' after carrier dip' : ''} (bypassed Tone.js Player)`);
@@ -863,13 +882,19 @@ async function generateAudio(options) {
 			if (n) console.log(`  Voice balance: voice sits ${(10 * Math.log10(vPow / Math.max(bPow, 1e-12))).toFixed(1)} dB over the ducked bed while speaking`);
 			for (let ch = 0; ch < rendered.numberOfChannels; ch++) {
 				const out = rendered.getChannelData(ch);
-				for (let i = 0; i < out.length; i++) if (vd[i]) out[i] += vd[i] * masterAt(i / outSR);
+				for (let i = 0; i < out.length; i++) {
+					if (!vd[i]) continue;
+					const v = vd[i] * masterAt(i / outSR);
+					out[i] += v;
+					if (bgStem) bgStem[ch][i] += v;
+				}
 			}
 			// Rare coincident voice + bed peaks: limit them instead of letting the
 			// post-render step scale the whole session down.
 			const mixPeak = getMaxVolume(rendered);
 			if (mixPeak > mixCeiling) {
 				const st = truePeakLimiter(rendered, mixCeiling, 0.02);
+				mixLimited = true;
 				console.log(`  Mix limiter: peak ${mixPeak.toFixed(3)} → ${mixCeiling} on ${st.reducedPct.toFixed(3)}% of samples, max ${st.maxReductionDb.toFixed(1)} dB`);
 			}
 		}
@@ -877,8 +902,10 @@ async function generateAudio(options) {
 
 	// Post-render: normalize to 0.95 peak if clipping
 	const peak = getMaxVolume(rendered, true);
+	let mixScale = 1;
 	if (peak > 1.0) {
 		const scale = 0.95 / peak;
+		mixScale = scale;
 		console.log(`  Output peak ${peak.toFixed(4)} exceeds 1.0, scaling down by ${scale.toFixed(4)}`);
 		for (let ch = 0; ch < rendered.numberOfChannels; ch++) {
 			const data = rendered.getChannelData(ch);
@@ -890,7 +917,54 @@ async function generateAudio(options) {
 		console.log(`  Output peak ${peak.toFixed(4)}, no scaling needed`);
 	}
 
-	return rendered;
+	if (!exportStems) return rendered;
+
+	// --------- Stems: the background alone + the recipe for the app's tone synth ---------
+	// The app plays bg and synthesises the tones from the recipe: mode 1 is
+	// (tones + bg) · modeGain.tones, which equals the mix above (except where the guided
+	// mix limiter acted: recipe.mixLimited). modeGain keeps each mode's peak at ≤ 0.95
+	// the same way the post-render step does for the mix.
+	const bgBuffer = new OfflineAudioContext(rendered.numberOfChannels, rendered.length, rendered.sampleRate)
+		.createBuffer(rendered.numberOfChannels, rendered.length, rendered.sampleRate);
+	bgStem.forEach((d, ch) => bgBuffer.copyToChannel(d, ch));
+	const gainFor = (p) => p > 1.0 ? 0.95 / p : 1;
+	let bgPeak = 0, binPeak = 0;
+	const k = binauralOnly ? mode2BinauralVolume / binauralVolume : 0;
+	for (let ch = 0; ch < bgStem.length; ch++) {
+		const b = bgStem[ch], t = binauralOnly ? binauralOnly.getChannelData(ch) : null;
+		for (let i = 0; i < b.length; i++) {
+			const a = Math.abs(b[i]);
+			if (a > bgPeak) bgPeak = a;
+			if (t) { const m = Math.abs(b[i] + k * t[i]); if (m > binPeak) binPeak = m; }
+		}
+	}
+	const r6 = (x) => Math.round(x * 1e6) / 1e6;
+	const effectiveBinaural = !!(useBinaural && numChannels === 2);
+	const recipe = {
+		v: toneRecipeVersion,
+		sampleRate: rendered.sampleRate,
+		frames: rendered.length,
+		durationSec,
+		channels: rendered.numberOfChannels,
+		sequence: sequenceText,
+		startCarrier: startingCarrier,
+		iso: r6(isochronicVolume),
+		punch: punchExponent,
+		muteIso: !!muteIsochronic,
+		binaural: effectiveBinaural,
+		bin: binauralVolume,
+		binOffset,
+		equalLoudness: { belowHz: 400, boost: 0.30 },
+		headroom: Math.min(mainVolume, 0.89),
+		fadeIn, fadeOut, finalBuffer,
+		sido: { factor: r6(binauralEmphasisFactor), windows: sidoWindows.map(w => [w.riseStart, w.riseEnd, w.peakEnd, w.decayEnd].map(r6)) },
+		duck: hasVoice ? { toneDb: voiceDuckToneDb, attack: voiceDuckAttack, release: voiceDuckRelease, intervals: duckIntervals.map(([a, b]) => [r6(a), r6(b)]) } : null,
+		mode2Bin: effectiveBinaural ? mode2BinauralVolume : 0,
+		modeGain: { tones: r6(mixScale), binaural: r6(gainFor(effectiveBinaural ? binPeak : bgPeak)), background: r6(gainFor(bgPeak)) },
+		mixLimited
+	};
+	console.log(`  Stems: background peak ${bgPeak.toFixed(4)}${binauralOnly ? `, mode 2 peak ${binPeak.toFixed(4)} (binaural ${mode2BinauralVolume})` : ''}; mode gains ${JSON.stringify(recipe.modeGain)}`);
+	return { mix: rendered, bg: bgBuffer, recipe };
 }
 
 // --------- Download Function ---------

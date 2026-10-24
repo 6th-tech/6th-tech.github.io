@@ -7,6 +7,13 @@
 //        [--rate 48000] [--playwright <playwright-core dir>] [--chrome <headless_shell executable>]
 //        [--force]  re-render even when a complete WAV exists (e.g. after re-voicing)
 //        [--voice <"<packId> - Voice" dir>] [--voice-volume 0.33] [--duck-bg 12] [--duck-tone 3]
+//        [--stems [--mix] [--mode2-bin 0.184]]
+//
+// App audio modes: --stems writes <audioFile>[.short].bg.wav (the background alone, as it
+// is added to the tones) and <audioFile>[.short].tones.json (the recipe the app's tone
+// synth plays from) instead of the mix; --mix writes the mix as well. ./generate.sh turns
+// each .bg.wav into a FLAC with the recipe embedded (see docs/audio-implementation.md,
+// "Stems and tone recipe").
 //
 // Guided packs: --voice points at the folder written by sixth-mind's
 // scripts/render_guidance.py (manifest.json + <audioFile>/<long|short>_NN.mp3). Every
@@ -54,6 +61,16 @@ const OPTS = {
 	mainVolume: parseFloat(arg('main', '0.7')),
 	outputSampleRate: parseInt(arg('rate', '48000'), 10)
 };
+const STEMS = has('stems'), MIX = !STEMS || has('mix');
+if (STEMS) OPTS.mode2BinauralVolume = parseFloat(arg('mode2-bin', '0.184'));
+const PROVENANCE = (() => {
+	let commit = 'unknown';
+	try {
+		commit = require('child_process').execSync('git rev-parse --short HEAD', { cwd: REPO }).toString().trim();
+		if (require('child_process').execSync('git status --porcelain -- scripts generate.html', { cwd: REPO }).toString().trim()) commit += '-dirty';
+	} catch (e) { /* not a git checkout */ }
+	return { generator: commit, rendered: new Date().toISOString().slice(0, 10) };
+})();
 const VARIANTS = has('long-only') ? [false] : (has('short-only') ? [true] : [false, true]);
 const VOICE = arg('voice');
 const VOICE_MANIFEST = VOICE ? JSON.parse(fs.readFileSync(path.join(VOICE, 'manifest.json'), 'utf8')) : null;
@@ -124,7 +141,7 @@ function startServer() {
 	const browser = await chromium.launch({ headless: true, executablePath: findChrome() });
 	const page = await browser.newPage({ acceptDownloads: true });
 	page.setDefaultTimeout(0);
-	page.on('console', (msg) => { const t = msg.text(); if (/Pre-flight|Normalisation|Limiter|Output peak|Background source|Voice|Mix limiter/.test(t)) console.log('   ' + t.trim()); });
+	page.on('console', (msg) => { const t = msg.text(); if (/Pre-flight|Normalisation|Limiter|Output peak|Background source|Voice|Mix limiter|Stems/.test(t)) console.log('   ' + t.trim()); });
 	page.on('pageerror', (e) => console.log('   PAGE ERROR ' + e.message));
 	await page.goto(`http://127.0.0.1:${port}/generate.html`, { waitUntil: 'load' });
 	const ok = await page.evaluate(() => typeof generateAudio === 'function' && typeof AudioAnalysis === 'object' && typeof audioBufferToWav === 'function');
@@ -137,15 +154,19 @@ function startServer() {
 		for (const short of VARIANTS) {
 			const seqText = short ? s.shortSequence : s.sequence;
 			if (!seqText) { console.log(`no ${short ? 'short' : 'long'} sequence for ${s.name}`); continue; }
-			const fname = s.audioFile + (short ? '.short.wav' : '.wav');
+			const stem = s.audioFile + (short ? '.short' : '');
+			const fname = stem + '.wav';
 			const target = path.join(OUT, fname);
+			const bgTarget = path.join(OUT, stem + '.bg.wav'), recipeTarget = path.join(OUT, stem + '.tones.json');
 			const t0 = Date.now();
 			try {
 				const probe = await page.evaluate(({ seqText }) => parseSequence(seqText).length, { seqText });
 				const expected = 44 + Math.round(probe) * OPTS.outputSampleRate * 2 * 2; // stereo 16-bit
-				if (!has('force') && fs.existsSync(target) && fs.statSync(target).size === expected) { console.log(`skip ${fname} (complete)`); skipped++; continue; }
+				const complete = (f) => fs.existsSync(f) && fs.statSync(f).size === expected;
+				const wanted = [MIX ? target : null, STEMS ? bgTarget : null].filter(Boolean);
+				if (!has('force') && wanted.every(complete) && (!STEMS || fs.existsSync(recipeTarget))) { console.log(`skip ${stem} (complete)`); skipped++; continue; }
 				const cues = voiceCues(s, short);
-				const [download, res] = await Promise.all([page.waitForEvent('download'), page.evaluate(async ({ s, short, OPTS, cues }) => {
+				const res = await page.evaluate(async ({ s, short, OPTS, cues, STEMS }) => {
 					const isNoise = ['white', 'pink', 'brown'].includes(s.backgroundSound.toLowerCase());
 					window.__ctx = window.__ctx || new (window.AudioContext || window.webkitAudioContext)();
 					window.__bg = window.__bg || {};
@@ -170,20 +191,38 @@ function startServer() {
 							voiceClips.push({ at: c.at, buffer: await window.__ctx.decodeAudioData(await r.arrayBuffer()) });
 						}
 					}
-					const buf = await generateAudio(Object.assign({
+					const out = await generateAudio(Object.assign({
 						sequence: parsed.sequence, length: parsed.length,
 						noiseType: isNoise ? s.backgroundSound : 'custom',
 						useNoiseModulation: isNoise, useNoiseFade: !isNoise, alwaysMono: false,
-						decodedNoiseBuffer: bg, muteIsochronic: false, voiceClips
+						decodedNoiseBuffer: bg, muteIsochronic: false, voiceClips,
+						exportStems: STEMS, sequenceText: short ? s.shortSequence : s.sequence
 					}, OPTS));
+					const buf = STEMS ? out.mix : out;
+					window.__out = out; // fetched by the downloads below, then released
 					let peak = 0; const x = buf.getChannelData(0); for (let i = 0; i < x.length; i += 5) { const a = Math.abs(x[i]); if (a > peak) peak = a; }
 					const bytes = 44 + buf.length * buf.numberOfChannels * 2;
-					downloadWav(buf, s.audioFile + (short ? '.short.wav' : '.wav')); // browser download: bytes never cross the automation pipe
-					return { ch: buf.numberOfChannels, fs: buf.sampleRate, sec: Math.round(buf.length / buf.sampleRate), mb: +(bytes / 1048576).toFixed(1), peak: +peak.toFixed(3), preflight };
-				}, { s, short, OPTS, cues })]);
-				await download.saveAs(target);
-				const saved = fs.statSync(target).size;
-				console.log(`${fname}: ${res.ch}ch ${res.fs}Hz ${res.sec}s ${res.mb}MB saved=${saved}${saved === expected ? '' : ' SIZE MISMATCH'} peak=${res.peak} in ${((Date.now() - t0) / 1000).toFixed(1)}s${res.preflight ? '\n   pre-flight: ' + res.preflight : ''}`);
+					return { ch: buf.numberOfChannels, fs: buf.sampleRate, sec: Math.round(buf.length / buf.sampleRate), mb: +(bytes / 1048576).toFixed(1), peak: +peak.toFixed(3), preflight, recipe: STEMS ? out.recipe : null };
+				}, { s, short, OPTS, cues, STEMS });
+				// Browser downloads: the audio bytes never cross the automation pipe.
+				const save = async (which, file) => {
+					const [download] = await Promise.all([page.waitForEvent('download'), page.evaluate(({ which, name }) => {
+						const o = window.__out;
+						downloadWav(which === 'bg' ? o.bg : (o.mix || o), name);
+					}, { which, name: path.basename(file) })]);
+					await download.saveAs(file);
+					const saved = fs.statSync(file).size;
+					return `${path.basename(file)} saved=${saved}${saved === expected ? '' : ' SIZE MISMATCH'}`;
+				};
+				const lines = [];
+				if (MIX) lines.push(await save('mix', target));
+				if (STEMS) {
+					lines.push(await save('bg', bgTarget));
+					fs.writeFileSync(recipeTarget, JSON.stringify(Object.assign(res.recipe, { provenance: PROVENANCE })) + '\n');
+					lines.push(`${path.basename(recipeTarget)} modeGain=${JSON.stringify(res.recipe.modeGain)}${res.recipe.mixLimited ? ' MIX LIMITED (mode 1 will not match the mix exactly)' : ''}`);
+				}
+				await page.evaluate(() => { window.__out = null; });
+				console.log(`${stem}: ${res.ch}ch ${res.fs}Hz ${res.sec}s ${res.mb}MB peak=${res.peak} in ${((Date.now() - t0) / 1000).toFixed(1)}s\n   ${lines.join('\n   ')}${res.preflight ? '\n   pre-flight: ' + res.preflight : ''}`);
 				done++;
 			} catch (e) {
 				console.log(`FAILED ${fname}: ${e.message}`);

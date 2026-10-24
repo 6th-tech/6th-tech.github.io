@@ -262,6 +262,39 @@ After Tone.js renders the isochronic/binaural layers, custom music is mixed in b
 
 Final safety check: if the combined output exceeds 1.0 peak, scale everything down to 0.95 peak. Logs when this happens for diagnostics.
 
+### 7. Stems and Tone Recipe (app audio modes)
+
+The app can synthesise the tones itself (sixth-mind `docs/AUDIO_MODES_PLAN.md`), so a session can play with the tones, with binaural beats only, or with the background alone. For that it downloads the background without tones plus the recipe its tone synth needs. `generateAudio({ …, exportStems: true, sequenceText })` returns `{ mix, bg, recipe }` instead of the mix:
+
+- **`bg`**: the background exactly as it is added to the tones (step 5): the levelled track × master fade × voice duck, plus the voice in guided sessions. `mix = (tones + bg) · modeGain.tones`.
+- **`recipe`** (JSON, `"v": 1`):
+
+| Field | Meaning |
+|---|---|
+| `sampleRate`, `frames`, `durationSec`, `channels` | the render's timeline |
+| `sequence` | the sequence text that was rendered |
+| `startCarrier`, `iso`, `punch`, `muteIso` | isochronic layer; `iso` is the effective level, including the boost for loud music (1c) |
+| `binaural`, `bin`, `binOffset` | binaural layer (on only for stereo output) |
+| `equalLoudness` | `{ belowHz: 400, boost: 0.30 }` (1b) |
+| `headroom`, `fadeIn`, `fadeOut`, `finalBuffer` | master envelope |
+| `sido` | `{ factor, windows: [[riseStart, riseEnd, peakEnd, decayEnd], …] }`, computed here so the app doesn't detect them again (1d) |
+| `duck` | guided sessions: `{ toneDb, attack, release, intervals: [[start, end], …] }`; `null` otherwise (1j) |
+| `mode2Bin` | binaural level when the isochronic tone is off ("Beats only"); default 0.184 (≈ the isochronic tone's RMS), `--mode2-bin` in the batch |
+| `modeGain` | `{ tones, binaural, background }`: whole-mix scale per mode so each peaks at ≤ 0.95, like step 6. `tones` is step 6's scale, so mode 1 equals the mix |
+| `mixLimited` | the guided mix limiter (1j) acted on the mix; the stems can't carry it, so mode 1 differs from the mix at those peaks |
+| `provenance` | `{ generator: <commit>, rendered: <date> }`, added by the batch |
+
+The batch writes them with `--stems` as `<audioFile>[.short].bg.wav` and `<audioFile>[.short].tones.json` (the mix only with `--mix`). `./generate.sh` turns each `.bg.wav` into FLAC only, with the JSON embedded as the `SIXTH_TONES` Vorbis comment:
+
+```bash
+node scripts/batch/regen-sessions.js --sessions ../sixth/sixth-mind/assets/default_sessions.json \
+  --sounds "/Users/smanuel/Desktop/Used Sounds" --out "<dir>" --stems
+./generate.sh "<dir>"                     # <audioFile>.bg.flac, <audioFile>.short.bg.flac
+ffprobe -v error -show_entries format_tags=SIXTH_TONES -of default=nw=1:nk=1 <file>.bg.flac
+```
+
+The app's synth (sixth-mind `packages/sixth_audio_engine`) follows the same formulas, but Chrome's oscillators drift slightly against it: on a 6-minute session, mix − bg − synth grows from ~1 LSB to ~−45 dBFS at the end. That is inaudible, and the stems are exact either way (`bg` is taken before the tones are added).
+
 ## Sequence Validation
 
 Every step after the first must include a ramp duration > 0. The scheduler applies a step's frequency only through its ramp automation (or an explicit carrier change), so a non-initial step without a ramp would silently keep playing the previous step's frequency for its entire duration. `validateSequenceSteps` enforces this rule:

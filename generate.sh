@@ -6,6 +6,10 @@ set -euo pipefail
 #   ./generate.sh /path/with~tilde
 #   -v  verbose
 #   -f  re-encode even when the FLAC/ALAC already exists (after re-rendering a WAV)
+#
+# Backgrounds for the app's audio modes (<name>.bg.wav from regen-sessions.js --stems)
+# become FLAC only, with the sibling <name>.tones.json embedded as the SIXTH_TONES
+# Vorbis comment. The app synthesises the tones from it.
 VERBOSE=0
 FORCE=0
 while [[ "${1:-}" == -* ]]; do
@@ -43,6 +47,18 @@ for wav_raw in "${WAVS[@]}"; do
   m4a_out="${base}.m4a"
 
   (( VERBOSE )) && echo "Processing: ${wav#./}"
+
+  if [[ "$base" == *.bg ]]; then
+    recipe="${base%.bg}.tones.json"
+    [[ -f "$recipe" ]] || { echo "✗ Missing ${recipe#./} for ${wav#./}"; exit 1; }
+    if (( FORCE )) || [[ ! -e "$flac_out" ]]; then
+      echo "→ FLAC + recipe : ${wav#./}"
+      ffmpeg -y -loglevel error -i "$wav" -map_metadata -1 -metadata SIXTH_TONES="$(tr -d '\n' < "$recipe")" -c:a flac -compression_level 12 "$flac_out"
+    else
+      echo "✓ FLAC exists: ${flac_out#./}"
+    fi
+    continue
+  fi
 
   if (( FORCE )) || [[ ! -e "$flac_out" ]]; then
     echo "→ FLAC : ${wav#./}"
