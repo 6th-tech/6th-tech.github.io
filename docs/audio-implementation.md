@@ -281,16 +281,16 @@ The app can synthesise the tones itself (sixth-mind `docs/AUDIO_MODES_PLAN.md`),
 | `duck` | guided sessions: `{ toneDb, attack, release, intervals: [[start, end], …] }`; `null` otherwise (1j) |
 | `mode2Bin` | binaural level when the isochronic tone is off ("Beats only"); default 0.184 (≈ the isochronic tone's RMS), `--mode2-bin` in the batch |
 | `modeGain` | `{ tones, binaural, background }`: whole-mix scale per mode so each peaks at ≤ 0.95, like step 6. `tones` is step 6's scale, so mode 1 equals the mix |
-| `mixLimited` | the guided mix limiter (1j) acted on the mix; the stems can't carry it, so mode 1 differs from the mix at those peaks |
+| `mixLimited` | the guided mix limiter (1j) acted on the mix. The stems can't carry it, so `modeGain.tones` comes from the unlimited peak instead: mode 1 is then slightly quieter than the mix (0.45 dB on heavy_body) and never clips |
 | `provenance` | `{ generator: <commit>, rendered: <date> }`, added by the batch |
 
-The batch writes them with `--stems` as `<audioFile>[.short].bg.wav` and `<audioFile>[.short].tones.json` (the mix only with `--mix`). `./generate.sh` turns each `.bg.wav` into FLAC only, with the JSON embedded as the `SIXTH_TONES` Vorbis comment:
+The batch writes them with `--stems` as `<audioFile>[.short].bg.wav` and `<audioFile>[.short].tones.json` (the mix only with `--mix`). `./generate.sh` turns each `.bg.wav` into Ogg Vorbis only (quality 6, about 160–190 kbps), with the JSON embedded as the `SIXTH_TONES` Vorbis comment. The tones are made on the phone, so the background no longer needs a lossless format: Vorbis is 3–4× smaller than FLAC, keeps the exact length (no encoder delay, so it lines up with the synth to the sample), and its noise stays 14–26 dB under the carrier-dip floor (measured on music, brown noise, birdsong and a pack session):
 
 ```bash
 node scripts/batch/regen-sessions.js --sessions ../sixth/sixth-mind/assets/default_sessions.json \
   --sounds "/Users/smanuel/Desktop/Used Sounds" --out "<dir>" --stems
-./generate.sh "<dir>"                     # <audioFile>.bg.flac, <audioFile>.short.bg.flac
-ffprobe -v error -show_entries format_tags=SIXTH_TONES -of default=nw=1:nk=1 <file>.bg.flac
+./generate.sh "<dir>"                     # <audioFile>.bg.ogg, <audioFile>.short.bg.ogg
+ffprobe -v error -show_entries stream_tags=SIXTH_TONES -of default=nw=1:nk=1 <file>.bg.ogg
 ```
 
 The app's synth (sixth-mind `packages/sixth_audio_engine`) follows the same formulas, but Chrome's oscillators drift slightly against it: on a 6-minute session, mix − bg − synth grows from ~1 LSB to ~−45 dBFS at the end. That is inaudible, and the stems are exact either way (`bg` is taken before the tones are added).

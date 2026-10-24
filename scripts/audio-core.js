@@ -727,7 +727,7 @@ async function generateAudio(options) {
 	// exportStems: the background exactly as it is added to the tones (master fade, voice
 	// duck and voice included), one Float32Array per channel.
 	const bgStem = exportStems ? Array.from({ length: rendered.numberOfChannels }, () => new Float32Array(rendered.length)) : null;
-	let duckIntervals = [], mixLimited = false;
+	let duckIntervals = [], mixLimited = false, unlimitedPeak = 0;
 
 	// --------- Level, dynamics and mix of the background ---------
 	{
@@ -895,6 +895,7 @@ async function generateAudio(options) {
 			if (mixPeak > mixCeiling) {
 				const st = truePeakLimiter(rendered, mixCeiling, 0.02);
 				mixLimited = true;
+				unlimitedPeak = mixPeak;
 				console.log(`  Mix limiter: peak ${mixPeak.toFixed(3)} → ${mixCeiling} on ${st.reducedPct.toFixed(3)}% of samples, max ${st.maxReductionDb.toFixed(1)} dB`);
 			}
 		}
@@ -921,9 +922,10 @@ async function generateAudio(options) {
 
 	// --------- Stems: the background alone + the recipe for the app's tone synth ---------
 	// The app plays bg and synthesises the tones from the recipe: mode 1 is
-	// (tones + bg) · modeGain.tones, which equals the mix above (except where the guided
-	// mix limiter acted: recipe.mixLimited). modeGain keeps each mode's peak at ≤ 0.95
-	// the same way the post-render step does for the mix.
+	// (tones + bg) · modeGain.tones, which equals the mix above. modeGain keeps each mode's
+	// peak at ≤ 0.95 the same way the post-render step does for the mix. Where the guided
+	// mix limiter acted (recipe.mixLimited) the stems can't reproduce it, so mode 1 is
+	// scaled by the unlimited peak instead (typically < 0.5 dB quieter than the mix).
 	const bgBuffer = new OfflineAudioContext(rendered.numberOfChannels, rendered.length, rendered.sampleRate)
 		.createBuffer(rendered.numberOfChannels, rendered.length, rendered.sampleRate);
 	bgStem.forEach((d, ch) => bgBuffer.copyToChannel(d, ch));
@@ -960,7 +962,7 @@ async function generateAudio(options) {
 		sido: { factor: r6(binauralEmphasisFactor), windows: sidoWindows.map(w => [w.riseStart, w.riseEnd, w.peakEnd, w.decayEnd].map(r6)) },
 		duck: hasVoice ? { toneDb: voiceDuckToneDb, attack: voiceDuckAttack, release: voiceDuckRelease, intervals: duckIntervals.map(([a, b]) => [r6(a), r6(b)]) } : null,
 		mode2Bin: effectiveBinaural ? mode2BinauralVolume : 0,
-		modeGain: { tones: r6(mixScale), binaural: r6(gainFor(effectiveBinaural ? binPeak : bgPeak)), background: r6(gainFor(bgPeak)) },
+		modeGain: { tones: r6(mixLimited ? gainFor(unlimitedPeak) : mixScale), binaural: r6(gainFor(effectiveBinaural ? binPeak : bgPeak)), background: r6(gainFor(bgPeak)) },
 		mixLimited
 	};
 	console.log(`  Stems: background peak ${bgPeak.toFixed(4)}${binauralOnly ? `, mode 2 peak ${binPeak.toFixed(4)} (binaural ${mode2BinauralVolume})` : ''}; mode gains ${JSON.stringify(recipe.modeGain)}`);

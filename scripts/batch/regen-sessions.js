@@ -12,7 +12,7 @@
 // App audio modes: --stems writes <audioFile>[.short].bg.wav (the background alone, as it
 // is added to the tones) and <audioFile>[.short].tones.json (the recipe the app's tone
 // synth plays from) instead of the mix; --mix writes the mix as well. ./generate.sh turns
-// each .bg.wav into a FLAC with the recipe embedded (see docs/audio-implementation.md,
+// each .bg.wav into an Ogg Vorbis file with the recipe embedded (see docs/audio-implementation.md,
 // "Stems and tone recipe").
 //
 // Guided packs: --voice points at the folder written by sixth-mind's
@@ -219,7 +219,7 @@ function startServer() {
 				if (STEMS) {
 					lines.push(await save('bg', bgTarget));
 					fs.writeFileSync(recipeTarget, JSON.stringify(Object.assign(res.recipe, { provenance: PROVENANCE })) + '\n');
-					lines.push(`${path.basename(recipeTarget)} modeGain=${JSON.stringify(res.recipe.modeGain)}${res.recipe.mixLimited ? ' MIX LIMITED (mode 1 will not match the mix exactly)' : ''}`);
+					lines.push(`${path.basename(recipeTarget)} modeGain=${JSON.stringify(res.recipe.modeGain)}${res.recipe.mixLimited ? ' mix limited: mode 1 gain from the unlimited peak' : ''}`);
 				}
 				await page.evaluate(() => { window.__out = null; });
 				console.log(`${stem}: ${res.ch}ch ${res.fs}Hz ${res.sec}s ${res.mb}MB peak=${res.peak} in ${((Date.now() - t0) / 1000).toFixed(1)}s\n   ${lines.join('\n   ')}${res.preflight ? '\n   pre-flight: ' + res.preflight : ''}`);
