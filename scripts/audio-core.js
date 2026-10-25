@@ -611,14 +611,30 @@ async function generateAudio(options) {
 		// Binaural layer: fade/emphasis gain (0..1..emphasisFactor) -> carrier-tracked level gain
 		let binauralL, binauralR, panL, panR, binauralGain, binauralLevel;
 		if (useBinaural && numChannels === 2) {
-			const firstBeatFreq = sequence[0].frequency;
 			// Symmetric carriers around the binaural base Cb: L = Cb - f/2, R = Cb + f/2.
 			// Cb = isochronic carrier + binOffset. With binOffset=0 this is the original
 			// coupled routing; with a separation offset, Cb sits out of band from the
 			// isochronic carrier so the f/2 monaural beat disappears. Δf = f either way.
+			// Both are computed sample by sample from the carrier's and the LFO's own
+			// frequency signals, so R - L is the pulse rate through every ramp
+			// (exponential ones included) and the beat stays in phase with the pulse
+			// (and the light). Ramping L and R separately let the beat drift up to half
+			// a cycle against the pulse on exponential ramps.
 			const firstBinBase = binBase(initialCarrier);
-			binauralL = new Tone.Oscillator(firstBinBase - firstBeatFreq / 2, "sine");
-			binauralR = new Tone.Oscillator(firstBinBase + firstBeatFreq / 2, "sine");
+			const binBaseFreq = new Tone.Add(binOffset);
+			const halfBeat = new Tone.Multiply(0.5);
+			osc.frequency.connect(binBaseFreq);
+			lfo.frequency.connect(halfBeat);
+			const leftFreq = new Tone.Subtract();
+			const rightFreq = new Tone.Add();
+			binBaseFreq.connect(leftFreq);
+			halfBeat.connect(leftFreq.subtrahend);
+			binBaseFreq.connect(rightFreq);
+			halfBeat.connect(rightFreq.addend);
+			binauralL = new Tone.Oscillator(0, "sine");
+			binauralR = new Tone.Oscillator(0, "sine");
+			leftFreq.connect(binauralL.frequency);
+			rightFreq.connect(binauralR.frequency);
 			panL = new Tone.Panner(-1);
 			panR = new Tone.Panner(1);
 			binauralGain = new Tone.Gain(0);
@@ -647,10 +663,8 @@ async function generateAudio(options) {
 
 		// Schedule frequency ramps
 		let currentTime = 0;
-		let currentCarrier = initialCarrier;
 		sequence.forEach(step => {
 			if (step.rampDuration) {
-				const stepCarrier = step.carrierFreq || currentCarrier;
 				transport.schedule((time) => {
 					const rampFn = step.rampType === 1 ? 'exponentialRampTo' : 'linearRampTo';
 					lfo.frequency[rampFn](step.frequency, step.rampDuration, time);
@@ -663,12 +677,6 @@ async function generateAudio(options) {
 							binauralLevel.gain[rampFn](binauralVolume * equalLoudnessBoost(binBase(step.carrierFreq)), step.rampDuration, time);
 						}
 					}
-					if (binauralR) {
-						// Ramp both sides symmetrically around the binaural base (Cb ± f/2)
-						// every step — the beat f changes per-step even when Cb does not.
-						binauralL.frequency[rampFn](binBase(stepCarrier) - step.frequency / 2, step.rampDuration, time);
-						binauralR.frequency[rampFn](binBase(stepCarrier) + step.frequency / 2, step.rampDuration, time);
-					}
 				}, currentTime);
 			} else if (step.carrierFreq) {
 				// No ramp but carrier changes — set immediately
@@ -679,16 +687,7 @@ async function generateAudio(options) {
 					if (binauralLevel) {
 						binauralLevel.gain.setValueAtTime(binauralVolume * equalLoudnessBoost(binBase(step.carrierFreq)), time);
 					}
-					if (binauralL) {
-						binauralL.frequency.setValueAtTime(binBase(step.carrierFreq) - step.frequency / 2, time);
-					}
-					if (binauralR) {
-						binauralR.frequency.setValueAtTime(binBase(step.carrierFreq) + step.frequency / 2, time);
-					}
 				}, currentTime);
-			}
-			if (step.carrierFreq) {
-				currentCarrier = step.carrierFreq;
 			}
 			currentTime += step.duration + (step.rampDuration || 0);
 		});

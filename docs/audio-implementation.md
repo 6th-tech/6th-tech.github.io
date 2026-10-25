@@ -171,6 +171,8 @@ The `binauralCarrierOffset` option (Hz, default 0) moves the binaural pair onto 
 
 Numerically verified: the f/2 component in the within-ear envelope drops from 0.064 (coupled) to 0 (separated), while the isochronic pulse at f is preserved. The dropdown in both generator UIs exposes Off / 150 / 250 Hz and defaults to +150 Hz, the setting the shipped default sessions were rendered with (the `binauralCarrierOffset` option itself still defaults to 0 for callers that omit it). No effect without headphones (binaural requires channel separation).
 
+**Beat locked to the pulse.** Each ear's frequency is computed sample by sample from the carrier's and the LFO's own frequency signals (`Tone.Add` / `Tone.Multiply` / `Tone.Subtract` into the oscillators' `frequency`): left = Cb(t) − f(t)/2, right = Cb(t) + f(t)/2. The beat R − L is then the pulse rate at every sample, ramps included, and since all oscillators start at phase 0 the beat stays in phase with the isochronic pulse, and with the app's light, which follows the pulse, for the whole session. Before 2026-10-25 the two ears were ramped separately to their targets; on an exponential ramp their difference does not follow the pulse's exponential curve (halfway through a 16 → 8 Hz ramp the pulse is at 11.3 Hz, the beat at 12.0 Hz), so every exponential ramp shifted the beat against the pulse. Over all 198 default and pack sequences, 96 % drifted by more than 0.1 cycle; most reached half a cycle (the beat exactly against the pulse), and the sleep sessions ended about a third of a cycle off. The ears' pitch paths differ from before by a fraction of a hertz, which is inaudible.
+
 ### 1g. Carrier-Tracking Dip
 
 Why it exists: an audit of the 31 music-backed default sessions (2026-09) showed that RMS normalization cannot see *where* a background's energy sits. Pads, piano and vocals put most of theirs at 150–950 Hz — exactly the carrier range — while rain and waves put theirs elsewhere, so at equal RMS the former masked the isochronic tone inside its own auditory band for up to 64% of a session and sustained notes within ±40 Hz of the carrier produced spurious monaural beats. Boosting the tone cannot fix this without making it dominate the mix; carving the background out of the tone's band can.
@@ -264,7 +266,7 @@ Final safety check: if the combined output exceeds 1.0 peak, scale everything do
 
 ### 7. Stems and Tone Recipe (app audio modes)
 
-The app can synthesise the tones itself (sixth-mind `docs/AUDIO_MODES_PLAN.md`), so a session can play with the tones, with binaural beats only, or with the background alone. For that it downloads the background without tones plus the recipe its tone synth needs. `generateAudio({ …, exportStems: true, sequenceText })` returns `{ mix, bg, recipe }` instead of the mix:
+The app can synthesise the tones itself (sixth-mind `docs/AUDIO_MODES.md`), so a session can play with the tones, with binaural beats only, or with the background alone. For that it downloads the background without tones plus the recipe its tone synth needs. `generateAudio({ …, exportStems: true, sequenceText })` returns `{ mix, bg, recipe }` instead of the mix:
 
 - **`bg`**: the background exactly as it is added to the tones (step 5): the levelled track × master fade × voice duck, plus the voice in guided sessions. `mix = (tones + bg) · modeGain.tones`.
 - **`recipe`** (JSON, `"v": 1`):
